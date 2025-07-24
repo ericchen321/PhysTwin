@@ -9,7 +9,9 @@ import warp as wp
 import cma
 import pickle
 import os
+import wandb
 
+from datetime import datetime
 
 class OptimizerCMA:
     def __init__(
@@ -70,6 +72,13 @@ class OptimizerCMA:
                 )
         else:
             raise ValueError(f"Data type {cfg.data_type} not supported")
+        
+
+        wandb.init(
+            project=f"cma_optimize_{cfg.run_name}",
+            name=f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
+            config=cfg.to_dict()
+        )
 
     def _init_start(
         self,
@@ -240,7 +249,32 @@ class OptimizerCMA:
 
         std = 1 / 6
         es = cma.CMAEvolutionStrategy(x_init, std, {"bounds": [0.0, 1.0], "seed": 42})
-        es.optimize(self.error_func, iterations=max_iter)
+        #es.optimize(self.error_func, iterations=max_iter)
+        while not es.stop():
+            # Get the next set of parameters
+            x = es.ask()
+            # Evaluate the error function for each parameter set
+            fitness = []
+            best_error = float("inf")
+            best_model = x[0]
+            best_wandb_log = None
+            for i in range(len(x)):
+                error, wandb_log = self.error_func(
+                    x[i], visualize=False, video_path=None
+                )
+                fitness.append(error)
+                if (error < best_error):
+                    best_error = error
+                    best_model = x[i]
+                    best_wandb_log = wandb_log
+            
+            logger.info(f"Best model: {best_wandb_log}")
+
+            # Log model values to wandb
+            wandb.log(best_wandb_log, step=es.countiter)
+
+            # Tell the optimizer about the fitness values
+            es.tell(x, fitness)
 
         # Get the results
         res = es.result
@@ -286,6 +320,8 @@ class OptimizerCMA:
         # Save out all the initialized parameters
         with open(f"{cfg.base_dir}/optimal_params.pkl", "wb") as f:
             pickle.dump(optimal_results, f)
+
+        wandb.finish()
 
     def error_func(self, parameters, visualize=False, video_path=None):
         global_spring_Y = self.denormalize(
@@ -366,6 +402,8 @@ class OptimizerCMA:
 
         if cfg.data_type == "real":
             self.simulator.set_acc_count(False)
+            total_chamfer_loss = 0.0
+            total_track_loss = 0.0
 
         total_loss = 0.0
         if not visualize:
@@ -399,6 +437,15 @@ class OptimizerCMA:
                 if wp.to_torch(self.simulator.acc_count, requires_grad=False)[0] == 0:
                     self.simulator.set_acc_count(True)
 
+                chamfer_loss = wp.to_torch(
+                    self.simulator.chamfer_loss, requires_grad=False
+                )
+                track_loss = wp.to_torch(
+                    self.simulator.track_loss, requires_grad=False
+                )
+                total_track_loss += track_loss.item()
+                total_chamfer_loss += chamfer_loss.item()
+
                 # Update the prev_acc used to calculate the acceleration loss
                 self.simulator.update_acc()
 
@@ -413,6 +460,29 @@ class OptimizerCMA:
             )
 
         total_loss /= cfg.train_frame - 1
+        if cfg.data_type == "real":
+            total_chamfer_loss /= cfg.train_frame - 1
+            total_track_loss /= cfg.train_frame - 1
+            
+        wandb_log = {
+            "loss": total_loss,
+            "chamfer_loss": (
+                total_chamfer_loss if cfg.data_type == "real" else 0.0
+            ),
+            "track_loss": (total_track_loss if cfg.data_type == "real" else 0.0),
+            "collide_else": wp.to_torch(
+                self.simulator.wp_collide_elas, requires_grad=False
+            ).item(),
+            "collide_fric": wp.to_torch(
+                self.simulator.wp_collide_fric, requires_grad=False
+            ).item(),
+            "collide_object_elas": wp.to_torch(
+                self.simulator.wp_collide_object_elas, requires_grad=False
+            ).item(),
+            "collide_object_fric": wp.to_torch(
+                self.simulator.wp_collide_object_fric, requires_grad=False
+            ).item(),
+        }
 
         if visualize == True:
             vertices = torch.stack(vertices, dim=0)
@@ -425,4 +495,4 @@ class OptimizerCMA:
                 save_path=video_path,
             )
 
-        return total_loss
+        return total_loss, wandb_log
