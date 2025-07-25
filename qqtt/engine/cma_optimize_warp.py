@@ -243,9 +243,11 @@ class OptimizerCMA:
             init_dashpot_damping,
         ]
 
-        self.error_func(
+        error, wandb_log = self.error_func(
             x_init, visualize=True, video_path=f"{cfg.base_dir}/optimizeCMA/init.mp4"
         )
+
+        wandb.log(wandb_log, step=0)
 
         std = 1 / 6
         es = cma.CMAEvolutionStrategy(x_init, std, {"bounds": [0.0, 1.0], "seed": 42})
@@ -271,7 +273,7 @@ class OptimizerCMA:
             logger.info(f"Best model: {best_wandb_log}")
 
             # Log model values to wandb
-            wandb.log(best_wandb_log, step=es.countiter)
+            wandb.log(best_wandb_log, step=es.countiter + 1)
 
             # Tell the optimizer about the fitness values
             es.tell(x, fitness)
@@ -463,7 +465,7 @@ class OptimizerCMA:
         if cfg.data_type == "real":
             total_chamfer_loss /= cfg.train_frame - 1
             total_track_loss /= cfg.train_frame - 1
-            
+
         wandb_log = {
             "loss": total_loss,
             "chamfer_loss": (
@@ -482,6 +484,12 @@ class OptimizerCMA:
             "collide_object_fric": wp.to_torch(
                 self.simulator.wp_collide_object_fric, requires_grad=False
             ).item(),
+            "log_spring_Y": wp.to_torch(
+                self.simulator.wp_spring_Y, requires_grad=False
+            )[0].item(),
+            "spring_Y": torch.exp(
+                wp.to_torch(self.simulator.wp_spring_Y, requires_grad=False)
+            )[0].item(),
         }
 
         if visualize == True:

@@ -371,6 +371,12 @@ class InvPhyTrainerWarp:
             if cfg.data_type == "real":
                 total_chamfer_loss /= cfg.train_frame - 1
                 total_track_loss /= cfg.train_frame - 1
+
+            spring_Y_hist_np = np.histogram(self.simulator.wp_spring_Y.numpy())
+            spring_Y_hist = wandb.Histogram(np_histogram=spring_Y_hist_np)
+
+            spring_Y_exp_np = np.histogram(np.exp(self.simulator.wp_spring_Y.numpy()))
+            spring_Y_exp_hist = wandb.Histogram(np_histogram=spring_Y_exp_np)
             wandb.log(
                 {
                     "loss": total_loss,
@@ -390,6 +396,8 @@ class InvPhyTrainerWarp:
                     "collide_object_fric": wp.to_torch(
                         self.simulator.wp_collide_object_fric, requires_grad=False
                     ).item(),
+                    "log_spring_Y": spring_Y_hist,
+                    "spring_Y": spring_Y_exp_hist,
                 },
                 step=i,
             )
