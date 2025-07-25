@@ -40,6 +40,7 @@ import copy
 import time
 import threading
 import time
+from datetime import datetime
 
 
 class InvPhyTrainerWarp:
@@ -166,15 +167,15 @@ class InvPhyTrainerWarp:
             if "debug" not in cfg.run_name:
                 wandb.init(
                     # set the wandb project where this run will be logged
-                    project="final_pipeline",
-                    name=cfg.run_name,
+                    project=f"phystwin+trainer-warp_{cfg.run_name}",
+                    name=f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
                     config=cfg.to_dict(),
                 )
             else:
                 wandb.init(
                     # set the wandb project where this run will be logged
-                    project="Debug",
-                    name=cfg.run_name,
+                    project=f"phystwin+debug-trainer-warp_{cfg.run_name}",
+                    name=f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
                     config=cfg.to_dict(),
                 )
             if not os.path.exists(f"{cfg.base_dir}/train"):
