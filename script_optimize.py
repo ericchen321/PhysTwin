@@ -11,9 +11,11 @@ p = argparse.ArgumentParser()
 p.add_argument("--base_path", type=str, default=base_path)
 p.add_argument("--case_name", type=str, required=True)
 p.add_argument("--wandb_entity", type=str, required=True)
+p.add_argument("--max_iter", type=int, default=20)
 
 base_path = p.parse_args().base_path
 case_name = p.parse_args().case_name
+max_iter = p.parse_args().max_iter
 
 # Set entity to control where wandb logs are stored
 entity = p.parse_args().wandb_entity
@@ -40,5 +42,5 @@ else:
     train_frame = split["train"][1]
 
     os.system(
-        f"python optimize_cma.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame}"
+        f"python optimize_cma.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame} --max_iter {max_iter}"
     )
