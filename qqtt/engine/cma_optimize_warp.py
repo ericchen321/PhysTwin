@@ -76,7 +76,6 @@ class OptimizerCMA:
 
         wandb.init(
             project=f"phystwin+cma-optimize_{cfg.run_name}",
-            name=f"{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}",
             config=cfg.to_dict()
         )
 

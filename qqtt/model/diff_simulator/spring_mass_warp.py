@@ -1,6 +1,7 @@
 import torch
 from qqtt.utils import logger, cfg
 import warp as wp
+import numpy as np
 
 wp.init()
 wp.set_device("cuda:0")
@@ -90,6 +91,62 @@ def sum_forces(
     vertice_forces[tid] = f_e + f_d
 
 @wp.kernel
+def compute_forces(
+    elastic_gradients: wp.array(dtype=wp.vec3),
+    damping_gradients: wp.array(dtype=wp.vec3),
+    f_elastic: wp.array(dtype=wp.vec3),
+    f_damping: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+
+    e = elastic_gradients[tid]
+    d = damping_gradients[tid]
+
+    f_elastic[tid] = -1.0 * e
+    f_damping[tid] = -1.0 * d
+
+@wp.kernel
+def compute_spring_lengths(
+    x: wp.array(dtype=wp.vec3),
+    control_x: wp.array(dtype=wp.vec3),
+    num_object_points: int,
+    springs: wp.array(dtype=wp.vec2i),
+    d: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+
+    p0_idx = springs[tid][0]
+    p1_idx = springs[tid][1]
+
+    if p0_idx >= num_object_points:
+        x1 = control_x[p0_idx - num_object_points]
+    else:
+        x1 = x[p0_idx]
+    if p1_idx >= num_object_points:
+        x2 = control_x[p1_idx - num_object_points]
+    else:
+        x2 = x[p1_idx]
+
+    d[tid] = x2 - x1
+
+@wp.kernel
+def compute_strain(
+    spring_dists: wp.array(dtype=wp.vec3),
+    rest_lengths: wp.array(dtype=float),
+    strain: wp.array(dtype=float)
+):
+    tid = wp.tid()
+
+    d = spring_dists[tid]
+    spring_length = wp.length(d)
+
+    l0 = rest_lengths[tid]
+
+    l_minus_l0 = spring_length - l0
+    #strain[tid] = l_minus_l0 / (l0 + 1e-6)
+    wp.atomic_add(strain, 0, l_minus_l0 / (l0 + 1e-6))
+
+@wp.kernel
 def eval_springs(
     x: wp.array(dtype=wp.vec3),
     v: wp.array(dtype=wp.vec3),
@@ -99,6 +156,7 @@ def eval_springs(
     springs: wp.array(dtype=wp.vec2i),
     rest_lengths: wp.array(dtype=float),
     spring_Y: wp.array(dtype=float),
+    strain_gradients: wp.array(dtype=wp.vec3),
     dashpot_damping: float,
     spring_Y_min: float,
     spring_Y_max: float,
@@ -129,7 +187,7 @@ def eval_springs(
         spring_length = wp.length(d)
 
         rest = rest_lengths[spring_idx]
-        y = spring_Y[spring_idx]
+        y = wp.clamp(wp.exp(spring_Y[spring_idx]), low=spring_Y_min, high=spring_Y_max)
 
         # compute elastic energy
         delta_length = spring_length - rest
@@ -146,7 +204,8 @@ def eval_springs(
         # TODO: compute dstrain
         # strain = (||x2 - x1|| - rest) / (rest) = ||x2-x1||/rest - 1 = x2-x1/(spring_length*rest)
 
-        dstrain_dd = d / (spring_length * rest)
+        #dstrain_dd = d / (spring_length * rest)
+        dstrain_dd = strain_gradients[spring_idx]
         strain_rate = wp.dot(dstrain_dd, vrel_proj)
 
         damping_energy = 0.5 * dashpot_damping * strain_rate * strain_rate
@@ -978,6 +1037,39 @@ class SpringMassSystemWarp:
                 )
 
             # Calculate the spring forces
+            total_strain = wp.zeros(1, dtype=float, requires_grad=True)
+            d = wp.zeros(self.n_springs, dtype=wp.vec3, requires_grad=True)
+            tape = wp.Tape()
+            wp.launch(
+                kernel=compute_spring_lengths,
+                dim=self.n_springs,
+                inputs=[
+                    self.wp_states[i].wp_x,
+                    self.wp_states[i].wp_control_x,
+                    self.num_object_points,
+                    self.wp_springs
+                ],
+                outputs=[d]
+            )
+
+            with tape:
+                wp.launch(
+                    kernel=compute_strain,
+                    dim=self.n_springs,
+                    inputs=[
+                        d,
+                        self.wp_rest_lengths,
+                    ],
+                    outputs=[total_strain]
+                )
+
+            tape.backward(total_strain)
+
+            # It's fine to take the gradient of total strain w.r.t to d. Because the i'th element of d only effects the i'th springs strain value
+            # So when taking the gradient of total strain, all other springs strain values get treated as constants and are zero'd out.
+            strain_gradients = d.grad
+            tape.zero()
+
             tape = wp.Tape()
             elastic_energies = wp.zeros(1, dtype=float, requires_grad=True)
             damping_energies = wp.zeros(1, dtype=float, requires_grad=True)
@@ -994,6 +1086,7 @@ class SpringMassSystemWarp:
                         self.wp_springs,
                         self.wp_rest_lengths,
                         self.wp_spring_Y,
+                        strain_gradients,
                         self.dashpot_damping,
                         self.spring_Y_min,
                         self.spring_Y_max,
@@ -1001,13 +1094,29 @@ class SpringMassSystemWarp:
                     outputs=[elastic_energies, damping_energies],
                 )
 
+            # It's fine to take the gradient of total energy w.r.t to x. Because the particular x only effects the energy of the springs connected to it.
+            # So when taking the gradient of total energy, all other spring energies get treated as constants and are zero'd out.
             tape.backward(elastic_energies)
-            f_elastic = -1.0 * self.wp_states[i].wp_x.grad
+            elastic_gradients = self.wp_states[i].wp_x.grad
             tape.zero()
 
             tape.backward(damping_energies)
-            f_damping = -1.0 * self.wp_states[i].wp_x.grad
+            damping_gradients = self.wp_states[i].wp_x.grad
             tape.zero()
+
+            f_elastic = wp.zeros_like(self.wp_states[i].wp_x, requires_grad=True)
+            f_damping = wp.zeros_like(self.wp_states[i].wp_x, requires_grad=True)
+
+            # Calculate forces from energy gradients
+            wp.launch(
+                kernel=compute_forces,
+                dim=self.num_object_points,
+                inputs=[
+                    elastic_gradients,
+                    damping_gradients,
+                ],
+                outputs=[f_elastic, f_damping]
+            )
 
             # Sum spring forces
             wp.launch(
