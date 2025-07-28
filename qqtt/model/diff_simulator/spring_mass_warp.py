@@ -91,50 +91,77 @@ def eval_springs(
     dashpot_damping: float,
     spring_Y_min: float,
     spring_Y_max: float,
-    f: wp.array(dtype=wp.vec3),
+    elastic_energies: wp.array(dtype=float),
+    damping_energies: wp.array(dtype=float)
 ):
-    tid = wp.tid()
+    spring_idx = wp.tid()
 
-    if wp.exp(spring_Y[tid]) > spring_Y_min:
+    if wp.exp(spring_Y[spring_idx]) > spring_Y_min:
 
-        idx1 = springs[tid][0]
-        idx2 = springs[tid][1]
+        p0_idx = springs[spring_idx][0]
+        p1_idx = springs[spring_idx][1]
 
-        if idx1 >= num_object_points:
-            x1 = control_x[idx1 - num_object_points]
-            v1 = control_v[idx1 - num_object_points]
+        if p0_idx >= num_object_points:
+            x1 = control_x[p0_idx - num_object_points]
+            v1 = control_v[p0_idx - num_object_points]
         else:
-            x1 = x[idx1]
-            v1 = v[idx1]
-        if idx2 >= num_object_points:
-            x2 = control_x[idx2 - num_object_points]
-            v2 = control_v[idx2 - num_object_points]
+            x1 = x[p0_idx]
+            v1 = v[p0_idx]
+        if p1_idx >= num_object_points:
+            x2 = control_x[p1_idx - num_object_points]
+            v2 = control_v[p1_idx - num_object_points]
         else:
-            x2 = x[idx2]
-            v2 = v[idx2]
+            x2 = x[p1_idx]
+            v2 = v[p1_idx]
 
-        rest = rest_lengths[tid]
+        d = x2 - x1
+        spring_length = wp.length(d)
 
-        dis = x2 - x1
-        dis_len = wp.length(dis)
+        rest = rest_lengths[spring_idx]
 
-        d = dis / wp.max(dis_len, 1e-6)
+        # compute elastic energy
+        delta_length = spring_length - rest
+        elastic_energy = 0.5 * spring_Y * delta_length * delta_length
 
-        spring_force = (
-            wp.clamp(wp.exp(spring_Y[tid]), low=spring_Y_min, high=spring_Y_max)
-            * (dis_len / rest - 1.0)
-            * d
-        )
+        # strain = delta_length / (rest + 1e-6)
 
-        v_rel = wp.dot(v2 - v1, d)
-        dashpot_forces = dashpot_damping * v_rel * d
+        d_unit = wp.normalize(d + wp.vec(1e-6, 1e-6, 1e-6))
+        vrel = v2 - v1
 
-        overall_force = spring_force + dashpot_forces
+        vrel_proj_speed = wp.dot(vrel, d_unit)
+        vrel_proj = vrel_proj_speed * d_unit
 
-        if idx1 < num_object_points:
-            wp.atomic_add(f, idx1, overall_force)
-        if idx2 < num_object_points:
-            wp.atomic_sub(f, idx2, overall_force)
+        # TODO: compute dstrain
+        # strain = (||x2 - x1|| - rest) / (rest) = ||x2-x1||/rest - 1 = x2-x1/(spring_length*rest)
+
+        dstrain_dd = d / (spring_length * rest)
+        strain_rate = wp.dot(dstrain_dd, vrel_proj)
+
+        damping_energy = 0.5 * dashpot_damping * strain_rate * strain_rate
+
+        elastic_energies[spring_idx] = elastic_energy
+        damping_energies[spring_idx] = damping_energy
+
+        # dis = x2 - x1
+        # dis_len = wp.length(dis)
+
+        # d = dis / wp.max(dis_len, 1e-6)
+
+        # spring_force = (
+        #     wp.clamp(wp.exp(spring_Y[tid]), low=spring_Y_min, high=spring_Y_max)
+        #     * (dis_len / rest - 1.0)
+        #     * d
+        # )
+
+        # v_rel = wp.dot(v2 - v1, d)
+        # dashpot_forces = dashpot_damping * v_rel * d
+
+        # overall_force = spring_force + dashpot_forces
+
+        # if idx1 < num_object_points:
+        #     wp.atomic_add(f, idx1, overall_force)
+        # if idx2 < num_object_points:
+        #     wp.atomic_sub(f, idx2, overall_force)
 
 
 @wp.kernel
@@ -956,25 +983,61 @@ class SpringMassSystemWarp:
                     outputs=[self.wp_states[i].wp_control_x],
                 )
 
-            # Calculate the spring forces
-            wp.launch(
-                kernel=eval_springs,
-                dim=self.n_springs,
-                inputs=[
-                    self.wp_states[i].wp_x,
-                    self.wp_states[i].wp_v,
-                    self.wp_states[i].wp_control_x,
-                    self.wp_states[i].wp_control_v,
-                    self.num_object_points,
-                    self.wp_springs,
-                    self.wp_rest_lengths,
-                    self.wp_spring_Y,
-                    self.dashpot_damping,
-                    self.spring_Y_min,
-                    self.spring_Y_max,
-                ],
-                outputs=[self.wp_states[i].wp_vertice_forces],
-            )
+            elastic_energies = wp.zeros(self.n_springs)
+            damping_energies = wp.zeros(self.n_springs)
+
+            # Calculate the spring elastic forces
+            with wp.ScopedTape():
+                wp.launch(
+                    kernel=eval_springs,
+                    dim=self.n_springs,
+                    inputs=[
+                        self.wp_states[i].wp_x,
+                        self.wp_states[i].wp_v,
+                        self.wp_states[i].wp_control_x,
+                        self.wp_states[i].wp_control_v,
+                        self.num_object_points,
+                        self.wp_springs,
+                        self.wp_rest_lengths,
+                        self.wp_spring_Y,
+                        self.dashpot_damping,
+                        self.spring_Y_min,
+                        self.spring_Y_max,
+                    ],
+                    outputs=[elastic_energies, damping_energies],
+                )
+
+                wp.backward(elastic_energies)
+            
+            f_elastic = wp.get_gradient(self.wp_states[i].wp_x)
+
+            # Calculate the spring damping forces
+            with wp.ScopedTape():
+                wp.launch(
+                    kernel=eval_springs,
+                    dim=self.n_springs,
+                    inputs=[
+                        self.wp_states[i].wp_x,
+                        self.wp_states[i].wp_v,
+                        self.wp_states[i].wp_control_x,
+                        self.wp_states[i].wp_control_v,
+                        self.num_object_points,
+                        self.wp_springs,
+                        self.wp_rest_lengths,
+                        self.wp_spring_Y,
+                        self.dashpot_damping,
+                        self.spring_Y_min,
+                        self.spring_Y_max,
+                    ],
+                    outputs=[elastic_energies, damping_energies],
+                )
+
+                wp.backward(damping_energies)
+
+            f_damping = wp.get_gradient(self.wp_states[i].wp_x)
+
+            # TODO: include rayleigh force
+            self.wp_states[i].wp_vertice_forces = f_elastic + f_damping
 
             if self.object_collision_flag:
                 output_v = self.wp_states[i].wp_v_before_collision
