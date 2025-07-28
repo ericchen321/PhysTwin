@@ -1,6 +1,7 @@
 import torch
 from qqtt.utils import logger, cfg
 import warp as wp
+import numpy as np
 
 wp.init()
 wp.set_device("cuda:0")
@@ -118,10 +119,11 @@ def eval_springs(
         spring_length = wp.length(d)
 
         rest = rest_lengths[spring_idx]
+        y = spring_Y[spring_idx]
 
         # compute elastic energy
         delta_length = spring_length - rest
-        elastic_energy = 0.5 * spring_Y * delta_length * delta_length
+        elastic_energy = 0.5 * y * delta_length * delta_length
 
         # strain = delta_length / (rest + 1e-6)
 
@@ -139,8 +141,11 @@ def eval_springs(
 
         damping_energy = 0.5 * dashpot_damping * strain_rate * strain_rate
 
-        elastic_energies[spring_idx] = elastic_energy
-        damping_energies[spring_idx] = damping_energy
+        #elastic_energies[spring_idx] = elastic_energy
+        #damping_energies[spring_idx] = damping_energy
+
+        wp.atomic_add(elastic_energies, 0, elastic_energy)
+        wp.atomic_add(damping_energies, 0, damping_energy)
 
         # dis = x2 - x1
         # dis_len = wp.length(dis)
@@ -983,58 +988,39 @@ class SpringMassSystemWarp:
                     outputs=[self.wp_states[i].wp_control_x],
                 )
 
-            elastic_energies = wp.zeros(self.n_springs)
-            damping_energies = wp.zeros(self.n_springs)
+            elastic_energies = wp.zeros(1, dtype=float, requires_grad=True)
+            damping_energies = wp.zeros(1, dtype=float, requires_grad=True)
 
-            # Calculate the spring elastic forces
-            with wp.ScopedTape():
+            # Calculate the spring elastic & damping forces
+            tape = wp.Tape()
+            input_buffer = [
+                self.wp_states[i].wp_x,
+                self.wp_states[i].wp_v,
+                self.wp_states[i].wp_control_x,
+                self.wp_states[i].wp_control_v,
+                self.num_object_points,
+                self.wp_springs,
+                self.wp_rest_lengths,
+                self.wp_spring_Y,
+                self.dashpot_damping,
+                self.spring_Y_min,
+                self.spring_Y_max,
+            ]
+            with tape:
                 wp.launch(
                     kernel=eval_springs,
                     dim=self.n_springs,
-                    inputs=[
-                        self.wp_states[i].wp_x,
-                        self.wp_states[i].wp_v,
-                        self.wp_states[i].wp_control_x,
-                        self.wp_states[i].wp_control_v,
-                        self.num_object_points,
-                        self.wp_springs,
-                        self.wp_rest_lengths,
-                        self.wp_spring_Y,
-                        self.dashpot_damping,
-                        self.spring_Y_min,
-                        self.spring_Y_max,
-                    ],
+                    inputs=input_buffer,
                     outputs=[elastic_energies, damping_energies],
                 )
 
-                wp.backward(elastic_energies)
-            
-            f_elastic = wp.get_gradient(self.wp_states[i].wp_x)
+            #tape.backward(elastic_energies)
+            f_elastic = wp.zeros_like(self.wp_states[i].wp_x) #-1.0 * tape.gradients[self.wp_states[i].wp_x]
+            #tape.zero()
 
-            # Calculate the spring damping forces
-            with wp.ScopedTape():
-                wp.launch(
-                    kernel=eval_springs,
-                    dim=self.n_springs,
-                    inputs=[
-                        self.wp_states[i].wp_x,
-                        self.wp_states[i].wp_v,
-                        self.wp_states[i].wp_control_x,
-                        self.wp_states[i].wp_control_v,
-                        self.num_object_points,
-                        self.wp_springs,
-                        self.wp_rest_lengths,
-                        self.wp_spring_Y,
-                        self.dashpot_damping,
-                        self.spring_Y_min,
-                        self.spring_Y_max,
-                    ],
-                    outputs=[elastic_energies, damping_energies],
-                )
+            #tape.backward(damping_energies)
+            f_damping = wp.zeros_like(self.wp_states[i].wp_x) #-1.0 * tape.gradients[self.wp_states[i].wp_x]
 
-                wp.backward(damping_energies)
-
-            f_damping = wp.get_gradient(self.wp_states[i].wp_x)
 
             # TODO: include rayleigh force
             self.wp_states[i].wp_vertice_forces = f_elastic + f_damping
