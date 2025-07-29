@@ -1039,7 +1039,6 @@ class SpringMassSystemWarp:
             # Calculate the spring forces
             total_strain = wp.zeros(1, dtype=float, requires_grad=True)
             d = wp.zeros(self.n_springs, dtype=wp.vec3, requires_grad=True)
-            tape = wp.Tape()
             wp.launch(
                 kernel=compute_spring_lengths,
                 dim=self.n_springs,
@@ -1052,57 +1051,54 @@ class SpringMassSystemWarp:
                 outputs=[d]
             )
 
-            with tape:
-                wp.launch(
-                    kernel=compute_strain,
-                    dim=self.n_springs,
-                    inputs=[
-                        d,
-                        self.wp_rest_lengths,
-                    ],
-                    outputs=[total_strain]
-                )
+            wp.launch(
+                kernel=compute_strain,
+                dim=self.n_springs,
+                inputs=[
+                    d,
+                    self.wp_rest_lengths,
+                ],
+                outputs=[total_strain]
+            )
 
-            tape.backward(total_strain)
+            self.tape.backward(total_strain)
 
             # It's fine to take the gradient of total strain w.r.t to d. Because the i'th element of d only effects the i'th springs strain value
             # So when taking the gradient of total strain, all other springs strain values get treated as constants and are zero'd out.
             strain_gradients = d.grad
-            tape.zero()
+            self.tape.zero()
 
-            tape = wp.Tape()
             elastic_energies = wp.zeros(1, dtype=float, requires_grad=True)
             damping_energies = wp.zeros(1, dtype=float, requires_grad=True)
-            with tape:
-                wp.launch(
-                    kernel=eval_springs,
-                    dim=self.n_springs,
-                    inputs=[
-                        self.wp_states[i].wp_x,
-                        self.wp_states[i].wp_v,
-                        self.wp_states[i].wp_control_x,
-                        self.wp_states[i].wp_control_v,
-                        self.num_object_points,
-                        self.wp_springs,
-                        self.wp_rest_lengths,
-                        self.wp_spring_Y,
-                        strain_gradients,
-                        self.dashpot_damping,
-                        self.spring_Y_min,
-                        self.spring_Y_max,
-                    ],
-                    outputs=[elastic_energies, damping_energies],
-                )
+            wp.launch(
+                kernel=eval_springs,
+                dim=self.n_springs,
+                inputs=[
+                    self.wp_states[i].wp_x,
+                    self.wp_states[i].wp_v,
+                    self.wp_states[i].wp_control_x,
+                    self.wp_states[i].wp_control_v,
+                    self.num_object_points,
+                    self.wp_springs,
+                    self.wp_rest_lengths,
+                    self.wp_spring_Y,
+                    strain_gradients,
+                    self.dashpot_damping,
+                    self.spring_Y_min,
+                    self.spring_Y_max,
+                ],
+                outputs=[elastic_energies, damping_energies],
+            )
 
             # It's fine to take the gradient of total energy w.r.t to x. Because the particular x only effects the energy of the springs connected to it.
             # So when taking the gradient of total energy, all other spring energies get treated as constants and are zero'd out.
-            tape.backward(elastic_energies)
-            elastic_gradients = self.wp_states[i].wp_x.grad
-            tape.zero()
+            self.tape.backward(elastic_energies)
+            elastic_gradients = self.tape.gradients[self.wp_states[i].wp_x]
+            self.tape.zero()
 
-            tape.backward(damping_energies)
-            damping_gradients = self.wp_states[i].wp_x.grad
-            tape.zero()
+            self.tape.backward(damping_energies)
+            damping_gradients = self.tape.gradients[self.wp_states[i].wp_x]
+            self.tape.zero()
 
             f_elastic = wp.zeros_like(self.wp_states[i].wp_x, requires_grad=True)
             f_damping = wp.zeros_like(self.wp_states[i].wp_x, requires_grad=True)
