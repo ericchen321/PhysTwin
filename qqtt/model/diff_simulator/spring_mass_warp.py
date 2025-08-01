@@ -41,6 +41,191 @@ class State:
         """Indicates whether the state arrays have gradient computation enabled."""
         return self.wp_x.requires_grad
 
+def eval_springs_energy():
+    pass
+
+class MassSpringIntegrator(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx, 
+        states,
+        frame_idx, 
+        object_collision_flag, 
+        num_object_points, 
+        wp_masses, 
+        dt, 
+        drag_damping, 
+        reverse_factor, 
+        wp_collide_elas, 
+        wp_collide_fric, 
+        collision_dist, 
+        wp_collision_indices, 
+        wp_collision_number,
+        wp_collide_object_elas,
+        wp_collide_object_fric,
+        wp_masks,
+        wp_current_object_points,
+        wp_current_object_visibilities,
+        wp_current_object_motions_valid,
+        num_valid_visibilities,
+        num_valid_motions,
+        prev_acc,
+        acc_count,
+        cfg,
+        num_original_points,
+        neigh_indices,
+        num_surface_points
+    ):
+        # evaluate the spring energies using pytorch
+        elastic_energy, damping_energy = eval_springs_energy()
+
+        elastic_force = -torch.autograd.grad(elastic_energy, states[frame_idx].wp_x, create_graph=True)
+        damping_force = -torch.autograd.grad(damping_energy, states[frame_idx].wp_x, create_graph=True)
+
+        overall_force = elastic_force + damping_force
+
+        states[frame_idx].wp_vertice_forces = wp.from_torch(overall_force, dtype=wp.vec3, requires_grad=True)
+
+        # simulate the remainder of the forward pass using warp
+        ctx.tape = wp.Tape()
+        with ctx.tape:
+            if object_collision_flag:
+                output_v = states[frame_idx].wp_v_before_collision
+            else:
+                output_v = states[frame_idx].wp_v_before_ground
+
+            # Update the output_v using the vertive_forces
+            wp.launch(
+                kernel=update_vel_from_force,
+                dim=num_object_points,
+                inputs=[
+                    states[frame_idx].wp_v,
+                    states[frame_idx].wp_vertice_forces,
+                    wp_masses,
+                    dt,
+                    drag_damping,
+                    reverse_factor,
+                ],
+                outputs=[output_v],
+            )
+
+            if object_collision_flag:
+                # Update the wp_v_before_ground based on the collision handling
+                wp.launch(
+                    kernel=object_collision,
+                    dim=num_object_points,
+                    inputs=[
+                        states[frame_idx].wp_x,
+                        states[frame_idx].wp_v_before_collision,
+                        wp_masses,
+                        wp_masks,
+                        wp_collide_object_elas,
+                        wp_collide_object_fric,
+                        collision_dist,
+                        wp_collision_indices,
+                        wp_collision_number,
+                    ],
+                    outputs=[states[frame_idx].wp_v_before_ground],
+                )
+
+            # Update the x and v
+            wp.launch(
+                kernel=integrate_ground_collision,
+                dim=num_object_points,
+                inputs=[
+                    states[frame_idx].wp_x,
+                    states[frame_idx].wp_v_before_ground,
+                    wp_collide_elas,
+                    wp_collide_fric,
+                    dt,
+                    reverse_factor,
+                ],
+                outputs=[states[frame_idx + 1].wp_x, states[frame_idx + 1].wp_v],
+            )
+
+            # Calculate loss
+
+            chamfer_loss, track_loss, acc_loss, loss = 0
+            distance_matrix = wp.zeros(
+                (num_original_points, num_surface_points), requires_grad=False
+            )
+
+            # Compute the chamfer loss
+            # Precompute the distances matrix for the chamfer loss
+            wp.launch(
+                compute_distances,
+                dim=(num_original_points, num_surface_points),
+                inputs=[
+                    states[-1].wp_x,
+                    wp_current_object_points,
+                    wp_current_object_visibilities,
+                ],
+                outputs=[distance_matrix],
+            )
+
+            wp.launch(
+                compute_neigh_indices,
+                dim=num_original_points,
+                inputs=[distance_matrix],
+                outputs=[neigh_indices],
+            )
+
+            wp.launch(
+                compute_chamfer_loss,
+                dim=num_original_points,
+                inputs=[
+                    states[-1].wp_x,
+                    wp_current_object_points,
+                    wp_current_object_visibilities,
+                    num_valid_visibilities,
+                    neigh_indices,
+                    cfg.chamfer_weight,
+                ],
+                outputs=[chamfer_loss],
+            )
+
+            # Compute the tracking loss
+            wp.launch(
+                compute_track_loss,
+                dim=num_original_points,
+                inputs=[
+                    states[-1].wp_x,
+                    wp_current_object_points,
+                    wp_current_object_motions_valid,
+                    num_valid_motions,
+                    cfg.track_weight,
+                ],
+                outputs=[track_loss],
+            )
+
+            wp.launch(
+                compute_acc_loss,
+                dim=num_object_points,
+                inputs=[
+                    states[0].wp_v,
+                    states[-1].wp_v,
+                    prev_acc,
+                    num_object_points,
+                    acc_count,
+                    cfg.acc_weight,
+                ],
+                outputs=[acc_loss],
+            )
+
+            wp.launch(
+                compute_final_loss,
+                dim=1,
+                inputs=[chamfer_loss, track_loss, acc_loss],
+                outputs=[loss],
+            )
+        
+
+        # TODO: honestly no idea what gradients are needed here.
+        ctx.save_for_backward(states[frame_idx].wp_x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
 
 @wp.kernel(enable_backward=False)
 def copy_vec3(data: wp.array(dtype=wp.vec3), origin: wp.array(dtype=wp.vec3)):
