@@ -244,7 +244,7 @@ def rollout(xyz_0, rgb_0, quat_0, opa_0, ctrl_pts, n_steps, device="cuda"):
         # relations = get_topk_indices(prev_particle_pos, K=16)
 
         # interpolate all_pos and particle_pos
-        chunk_size = 20_000
+        chunk_size = 10_000
         num_chunks = (len(all_pos) + chunk_size - 1) // chunk_size
         for j in range(num_chunks):
             start = j * chunk_size

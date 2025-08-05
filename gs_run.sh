@@ -10,7 +10,7 @@ output_video_dir="./gaussian_output_video"
 #         "single_push_sloth"
 #         "weird_package")
 
-scenes=("double_stretch_sloth")
+scenes=("single_lift_cloth_4")
 
 exp_name="init=hybrid_iso=True_ldepth=0.001_lnormal=0.0_laniso_0.0_lseg=1.0"
 
