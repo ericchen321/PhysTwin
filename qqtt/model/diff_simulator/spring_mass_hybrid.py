@@ -28,15 +28,45 @@ if not cfg.use_graph:
 def eval_springs_energy():
     pass
 
+class MassSpringHybridIntegrator(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        v: torch.Tensor,
+        v_before_collision: torch.Tensor,
+        v_before_ground: torch.Tensor,
+        vertice_forces: torch.Tensor,
+        dt,
+        num_substeps
+    ):
+        # Compute substep dt
+        substep_dt = dt / num_substeps
+        
+        # Convert initial state to Warp arrays
+        wp_v_before_collision = wp.from_torch(v_before_collision, dtype=wp.vec3, requires_grad=True)
+        wp_v_before_ground = wp.from_torch(v_before_ground, dtype=wp.vec3, requires_grad=True)
+        wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
+        wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
+
+        # Create working copies for substep integration
+        current_x_torch = x.clone()
+        current_v_torch = v.clone()
+        current_x = wp.clone(wp_x)
+        current_v = wp.clone(wp_v)
+
+    def backward():
+        pass
+
 class MassSpringIntegrator(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx, 
-        wp_x,
-        wp_v,
-        wp_v_before_collision,
-        wp_v_before_ground,
-        wp_vertice_forces,
+        x: torch.Tensor,
+        v: torch.Tensor,
+        v_before_collision: torch.Tensor,
+        v_before_ground: torch.Tensor,
+        vertice_forces: torch.Tensor,
         wp_v_initial,
         object_collision_flag, 
         num_object_points, 
@@ -62,95 +92,135 @@ class MassSpringIntegrator(torch.autograd.Function):
         cfg,
         num_original_points,
         neigh_indices,
-        num_surface_points
+        num_surface_points,
+        num_substeps: int = 1  # New parameter for number of substeps
     ):
-        # evaluate the spring energies using pytorch
-        elastic_energy, damping_energy = eval_springs_energy()
+        # Compute substep dt
+        substep_dt = dt / num_substeps
+        
+        # Convert initial state to Warp arrays
+        wp_v_before_collision = wp.from_torch(v_before_collision, dtype=wp.vec3, requires_grad=True)
+        wp_v_before_ground = wp.from_torch(v_before_ground, dtype=wp.vec3, requires_grad=True)
+        wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
+        wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
 
-        x = wp.to_torch(wp_x)
-        dx = wp.to_torch(wp_v)
-
-        elastic_force = -torch.autograd.grad(elastic_energy, x, create_graph=True)
-        damping_force = -torch.autograd.grad(damping_energy, x, create_graph=True)
-
-        overall_force = elastic_force + damping_force
-
-        wp_vertice_forces = wp.from_torch(overall_force, dtype=wp.vec3, requires_grad=True)
-
+        # Create working copies for substep integration
+        current_x_torch = x.clone()
+        current_v_torch = v.clone()
+        current_x = wp.clone(wp_x)
+        current_v = wp.clone(wp_v)
+        
         # simulate the remainder of the forward pass using warp
         ctx.tape = wp.Tape()
         with ctx.tape:
-            if object_collision_flag:
-                output_v = wp_v_before_collision
-            else:
-                output_v = wp_v_before_ground
+            # Run multiple substeps
+            for substep in range(num_substeps):
+                # Recompute forces at current position and velocity
+                current_x_torch = wp.to_torch(current_x)
+                current_v_torch = wp.to_torch(current_v)
+                
+                # Make sure gradients are enabled for force computation
+                current_x_torch.requires_grad_(True)
+                current_v_torch.requires_grad_(True)
+                
+                # Evaluate spring energies at current state
+                elastic_energy, damping_energy = eval_springs_energy(current_x_torch, current_v_torch)
+                
+                # Compute forces via autodiff
+                elastic_force = -torch.autograd.grad(
+                    elastic_energy, current_x_torch, create_graph=True, retain_graph=True
+                )[0]
+                damping_force = -torch.autograd.grad(
+                    damping_energy, current_v_torch, create_graph=True, retain_graph=True
+                )[0]
+                
+                overall_force = elastic_force + damping_force
+                wp_vertice_forces = wp.from_torch(overall_force, dtype=wp.vec3, requires_grad=True)
 
-            # Update the output_v using the vertive_forces
-            wp.launch(
-                kernel=update_vel_from_force,
-                dim=num_object_points,
-                inputs=[
-                    wp_v,
-                    wp_vertice_forces,
-                    wp_masses,
-                    dt,
-                    drag_damping,
-                    reverse_factor,
-                ],
-                outputs=[output_v],
-            )
+                # Determine which velocity array to use based on collision flag
+                if object_collision_flag:
+                    output_v = wp.clone(wp_v_before_collision)
+                else:
+                    output_v = wp.clone(wp_v_before_ground)
 
-            if object_collision_flag:
-                # Update the wp_v_before_ground based on the collision handling
+                # Update velocity using recomputed forces
                 wp.launch(
-                    kernel=object_collision,
+                    kernel=update_vel_from_force,
                     dim=num_object_points,
                     inputs=[
-                        wp_x,
-                        wp_v_before_collision,
+                        current_v,
+                        wp_vertice_forces,
                         wp_masses,
-                        wp_masks,
-                        wp_collide_object_elas,
-                        wp_collide_object_fric,
-                        collision_dist,
-                        wp_collision_indices,
-                        wp_collision_number,
+                        substep_dt,
+                        drag_damping,
+                        reverse_factor,
                     ],
-                    outputs=[wp_v_before_ground],
+                    outputs=[output_v],
                 )
 
-            # Update the x and v
-            next_x = wp.zeros_like(wp_x, requires_grad=True)
-            next_y = wp.zeros_like(wp_v, requires_grad=True)
-            wp.launch(
-                kernel=integrate_ground_collision,
-                dim=num_object_points,
-                inputs=[
-                    wp_x,
-                    wp_v_before_ground,
-                    wp_collide_elas,
-                    wp_collide_fric,
-                    dt,
-                    reverse_factor,
-                ],
-                outputs=[next_x, next_y],
-            )
+                # Handle object collision if enabled
+                if object_collision_flag:
+                    temp_v_before_ground = wp.clone(wp_v_before_ground)
+                    wp.launch(
+                        kernel=object_collision,
+                        dim=num_object_points,
+                        inputs=[
+                            current_x,
+                            output_v,  # This was wp_v_before_collision
+                            wp_masses,
+                            wp_masks,
+                            wp_collide_object_elas,
+                            wp_collide_object_fric,
+                            collision_dist,
+                            wp_collision_indices,
+                            wp_collision_number,
+                        ],
+                        outputs=[temp_v_before_ground],
+                    )
+                    # Use the collision-processed velocity for integration
+                    integration_v = temp_v_before_ground
+                else:
+                    integration_v = output_v
 
-            # Calculate loss
+                # Integrate position and velocity for this substep
+                next_x = wp.zeros_like(current_x, requires_grad=True)
+                next_v = wp.zeros_like(current_v, requires_grad=True)
+                wp.launch(
+                    kernel=integrate_ground_collision,
+                    dim=num_object_points,
+                    inputs=[
+                        current_x,
+                        integration_v,
+                        wp_collide_elas,
+                        wp_collide_fric,
+                        substep_dt,
+                        reverse_factor,
+                    ],
+                    outputs=[next_x, next_v],
+                )
+                
+                # Update current state for next substep
+                current_x = next_x
+                current_v = next_v
 
-            chamfer_loss, track_loss, acc_loss, loss = 0
+            # After all substeps are complete, calculate loss using final state
+            chamfer_loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+            track_loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+            acc_loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+            loss = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+            
             distance_matrix = wp.zeros(
-                (num_original_points, num_surface_points), requires_grad=False
+                (num_original_points, num_surface_points), 
+                dtype=wp.float32,
+                requires_grad=False
             )
 
-            # Compute the chamfer loss
-            # Precompute the distances matrix for the chamfer loss
-            # TODO: does states[-1].x refer to the current state or a future state?
+            # Compute the chamfer loss using final position
             wp.launch(
                 compute_distances,
                 dim=(num_original_points, num_surface_points),
                 inputs=[
-                    wp_x,
+                    current_x,  # Use final position after all substeps
                     wp_current_object_points,
                     wp_current_object_visibilities,
                 ],
@@ -168,7 +238,7 @@ class MassSpringIntegrator(torch.autograd.Function):
                 compute_chamfer_loss,
                 dim=num_original_points,
                 inputs=[
-                    wp_x,
+                    current_x,  # Use final position
                     wp_current_object_points,
                     wp_current_object_visibilities,
                     num_valid_visibilities,
@@ -178,12 +248,12 @@ class MassSpringIntegrator(torch.autograd.Function):
                 outputs=[chamfer_loss],
             )
 
-            # Compute the tracking loss
+            # Compute the tracking loss using final position
             wp.launch(
                 compute_track_loss,
                 dim=num_original_points,
                 inputs=[
-                    wp_x,
+                    current_x,  # Use final position
                     wp_current_object_points,
                     wp_current_object_motions_valid,
                     num_valid_motions,
@@ -192,12 +262,13 @@ class MassSpringIntegrator(torch.autograd.Function):
                 outputs=[track_loss],
             )
 
+            # Compute acceleration loss using final velocity
             wp.launch(
                 compute_acc_loss,
                 dim=num_object_points,
                 inputs=[
                     wp_v_initial,
-                    wp_v,
+                    current_v,  # Use final velocity
                     prev_acc,
                     num_object_points,
                     acc_count,
@@ -213,24 +284,33 @@ class MassSpringIntegrator(torch.autograd.Function):
                 outputs=[loss],
             )
 
-        # TODO: honestly no idea what gradients are needed here.
+
+        torch_x = wp.to_torch(current_x)
+        torch_v = wp.to_torch(current_v)
+        torch_v_before_collision = wp.to_torch(wp_v_before_collision)
+        torch_v_before_ground = wp.to_torch(wp_v_before_ground)
+        torch_vertice_forces = wp.to_torch(wp_vertice_forces)
+
+        # Save for backward pass
         ctx.save_for_backward(
-            loss,
-            overall_force,
-            x,
-            dx
+            x,  # Initial position
+            v,   # Initial velocity
+            torch_vertice_forces # Overall force
         )
         
-        ctx.wp_vertice_forces = wp_vertice_forces
+        # Store warp arrays needed for backward
         ctx.wp_v_before_collision = wp_v_before_collision
         ctx.wp_v_before_ground = wp_v_before_ground
+        ctx.wp_vertice_forces = wp_vertice_forces
+        ctx.loss = loss
 
-        return loss, next_x, next_y, wp_vertice_forces, wp_v_before_collision, wp_v_before_ground # for now we won't return the other losses.
+        # Return final state after all substeps and the loss
+        return loss, torch_x, torch_v, torch_v_before_collision, torch_v_before_ground, torch_vertice_forces
 
     @staticmethod
     def backward(ctx, dL_dL, dL_dnext_x, dL_dnext_y, *grad_outputs):
         # Get saved tensors
-        loss, overall_force, x, dx = ctx.saved_tensors[0] 
+        loss, x, dx, overall_forces = ctx.saved_tensors[0] 
 
         # Compute gradients of loss with respect to force (dL_df)
         ctx.tape.backward(ctx.loss)
@@ -244,10 +324,10 @@ class MassSpringIntegrator(torch.autograd.Function):
 
         # Compute gradients of force with respect to inputs (df_dx, df_dv)
         df_dx = torch.autograd.grad(
-            overall_force, x, grad_outputs=dL_df, retain_graph=True, create_graph=True
+            overall_forces, x, grad_outputs=dL_df, retain_graph=True, create_graph=True
         )[0]
         df_dv = torch.autograd.grad(
-            overall_force, dx, grad_outputs=dL_df, retain_graph=True, create_graph=True
+            overall_forces, dx, grad_outputs=dL_df, retain_graph=True, create_graph=True
         )[0]
 
         # Chain rule to get gradients of loss with respect to inputs (dL_dx, dL_dv)
@@ -255,37 +335,38 @@ class MassSpringIntegrator(torch.autograd.Function):
         dL_dv = dL_df * df_dv
 
         return (
-            dL_dx,
-            dL_dv,
-            dL_dv_before_collision,
-            dL_dv_before_ground,
-            dL_df,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None
+            dL_dx,                    # x
+            dL_dv,                    # v
+            dL_dv_before_collision,   # v_before_collision
+            dL_dv_before_ground,      # v_before_ground
+            None,                     # vertice_forces (computed internally now)
+            None,                     # wp_v_initial
+            None,                     # object_collision_flag
+            None,                     # num_object_points
+            None,                     # wp_masses
+            None,                     # dt
+            None,                     # drag_damping
+            None,                     # reverse_factor
+            None,                     # wp_collide_elas
+            None,                     # wp_collide_fric
+            None,                     # collision_dist
+            None,                     # wp_collision_indices
+            None,                     # wp_collision_number
+            None,                     # wp_collide_object_elas
+            None,                     # wp_collide_object_fric
+            None,                     # wp_masks
+            None,                     # wp_current_object_points
+            None,                     # wp_current_object_visibilities
+            None,                     # wp_current_object_motions_valid
+            None,                     # num_valid_visibilities
+            None,                     # num_valid_motions
+            None,                     # prev_acc
+            None,                     # acc_count
+            None,                     # cfg
+            None,                     # num_original_points
+            None,                     # neigh_indices
+            None,                     # num_surface_points
+            None,                     # num_substeps
         )
 
 
