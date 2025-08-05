@@ -252,7 +252,7 @@ class OptimizerCMA:
         std = 1 / 6
         es = cma.CMAEvolutionStrategy(x_init, std, {"bounds": [0.0, 1.0], "seed": 42})
         #es.optimize(self.error_func, iterations=max_iter)
-        while not es.stop():
+        while not es.stop() and es.countiter < max_iter:
             # Get the next set of parameters
             x = es.ask()
             # Evaluate the error function for each parameter set

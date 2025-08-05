@@ -32,7 +32,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_path", type=str, required=True)
     parser.add_argument("--case_name", type=str, required=True)
     parser.add_argument("--train_frame", type=int, required=True)
-    parser.add_argument("--max_iter", type=int, default=20)
+    parser.add_argument("--max_iter", type=int, default=3)
     args = parser.parse_args()
 
     base_path = args.base_path
