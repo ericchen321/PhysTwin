@@ -104,8 +104,83 @@ def eval_springs_energy(
 
 class MassSpringLoss(torch.autograd.Function):
     @staticmethod
-    def forward():
-        pass
+    def forward(
+        x_curr: torch.Tensor,
+        v_curr: torch.Tensor,
+        x_initial: torch.Tensor,
+        v_initial: torch.Tensor
+    ):
+
+        chamfer_loss, track_loss, acc_loss = 0
+
+        # Compute the chamfer loss
+        # Precompute the distances matrix for the chamfer loss
+        wp.launch(
+            compute_distances,
+            dim=(num_original_points, num_surface_points),
+            inputs=[
+                wp_states[-1].wp_x,
+                wp_current_object_points,
+                wp_current_object_visibilities,
+            ],
+            outputs=[distance_matrix],
+        )
+
+        wp.launch(
+            compute_neigh_indices,
+            dim=num_original_points,
+            inputs=[distance_matrix],
+            outputs=[neigh_indices],
+        )
+
+        wp.launch(
+            compute_chamfer_loss,
+            dim=num_original_points,
+            inputs=[
+                wp_states[-1].wp_x,
+                wp_current_object_points,
+                wp_current_object_visibilities,
+                num_valid_visibilities,
+                neigh_indices,
+                chamfer_weight,
+            ],
+            outputs=[chamfer_loss],
+        )
+
+        # Compute the tracking loss
+        wp.launch(
+            compute_track_loss,
+            dim=num_original_points,
+            inputs=[
+                wp_states[-1].wp_x,
+                wp_current_object_points,
+                wp_current_object_motions_valid,
+                num_valid_motions,
+                track_weight,
+            ],
+            outputs=[self.track_loss],
+        )
+
+        wp.launch(
+            compute_acc_loss,
+            dim=num_object_points,
+            inputs=[
+                wp_states[0].wp_v,
+                wp_states[-1].wp_v,
+                prev_acc,
+                num_object_points,
+                acc_count,
+                acc_weight,
+            ],
+            outputs=[acc_loss],
+        )
+
+        wp.launch(
+            compute_final_loss,
+            dim=1,
+            inputs=[chamfer_loss, track_loss, acc_loss],
+            outputs=[loss],
+        )
 
     @staticmethod
     def backward():
