@@ -940,8 +940,11 @@ class SpringMassSystemWarp:
         )
 
     def step(self):
-        with wp.ScopedTimer("SimulationTime"):
-            for i in range(self.num_substeps):
+        for i in range(self.num_substeps):
+            with wp.ScopedTimer(
+            name="simulate_substep",
+            synchronize=True,
+            cuda_filter=wp.TIMING_ALL):
                 self.wp_states[i].clear_forces()
                 if not self.controller_points is None:
                     # Set the control point
