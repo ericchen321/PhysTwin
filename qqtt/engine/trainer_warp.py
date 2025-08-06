@@ -1157,7 +1157,10 @@ class InvPhyTrainerWarp:
             self.simulator.set_controller_interactive(prev_target, current_target)
             if self.simulator.object_collision_flag:
                 self.simulator.update_collision_graph()
-            wp.capture_launch(self.simulator.forward_graph)
+            if cfg.use_graph:
+                wp.capture_launch(self.simulator.forward_graph)
+            else:
+                self.simulator.step()
             x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
             # Set the intial state for the next step
             self.simulator.set_init_state(
