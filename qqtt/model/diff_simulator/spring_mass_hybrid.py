@@ -108,10 +108,27 @@ class MassSpringLoss(torch.autograd.Function):
         x_curr: torch.Tensor,
         v_curr: torch.Tensor,
         x_initial: torch.Tensor,
-        v_initial: torch.Tensor
+        v_initial: torch.Tensor,
+        num_original_points: float,
+        num_surface_points: float,
+        num_valid_visibilities: float,
+        track_weight: float,
+        chamfer_weight: float,
+        num_valid_motions,
+        current_object_points,
+        current_object_visibilities,
+        
     ):
-
         chamfer_loss, track_loss, acc_loss = 0
+
+        wp_x_curr = wp.from_torch(x_curr)
+
+        distance_matrix = wp.zeros(
+            (num_original_points, num_surface_points), requires_grad=False
+        )
+        neigh_indices = wp.zeros(
+            (num_original_points), dtype=wp.int32, requires_grad=False
+        )
 
         # Compute the chamfer loss
         # Precompute the distances matrix for the chamfer loss
@@ -119,9 +136,9 @@ class MassSpringLoss(torch.autograd.Function):
             compute_distances,
             dim=(num_original_points, num_surface_points),
             inputs=[
-                wp_states[-1].wp_x,
-                wp_current_object_points,
-                wp_current_object_visibilities,
+                wp_x_curr,
+                current_object_points,
+                current_object_visibilities,
             ],
             outputs=[distance_matrix],
         )
@@ -139,7 +156,7 @@ class MassSpringLoss(torch.autograd.Function):
             inputs=[
                 wp_states[-1].wp_x,
                 wp_current_object_points,
-                wp_current_object_visibilities,
+                current_object_visibilities,
                 num_valid_visibilities,
                 neigh_indices,
                 chamfer_weight,
@@ -158,7 +175,7 @@ class MassSpringLoss(torch.autograd.Function):
                 num_valid_motions,
                 track_weight,
             ],
-            outputs=[self.track_loss],
+            outputs=[track_loss],
         )
 
         wp.launch(
