@@ -944,6 +944,8 @@ class SpringMassSystemWarp:
             with wp.ScopedTimer(
             name="simulate_substep",
             synchronize=True,
+            use_nvtx=True,
+            color="yellow",
             cuda_filter=wp.TIMING_ALL):
                 self.wp_states[i].clear_forces()
                 if not self.controller_points is None:
