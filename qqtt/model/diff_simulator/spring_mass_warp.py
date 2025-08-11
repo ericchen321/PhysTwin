@@ -2,7 +2,7 @@ import torch
 from qqtt.utils import logger, cfg
 import warp as wp
 
-from kernels import (
+from qqtt.model.diff_simulator.kernels import (
     update_vel_from_force,
     object_collision,
     integrate_ground_collision,
@@ -12,6 +12,15 @@ from kernels import (
     compute_track_loss,
     compute_acc_loss,
     compute_final_loss,
+    copy_vec3,
+    copy_int,
+    update_acc,
+    set_int,
+    update_potential_collision,
+    eval_springs,
+    copy_float,
+    compute_simple_loss,
+    set_control_points
 )
 
 wp.init()
