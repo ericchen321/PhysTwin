@@ -1,5 +1,5 @@
 conda install -y numpy==1.26.4
-pip install warp-lang
+pip install warp-lang==1.7.1
 pip install usd-core matplotlib
 pip install "pyglet<2"
 pip install open3d
