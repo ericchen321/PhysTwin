@@ -12,6 +12,12 @@ from qqtt.model.diff_simulator.kernels import (
     compute_track_loss,
     compute_acc_loss,
     compute_final_loss,
+    set_int,
+    copy_vec3,
+    update_potential_collision,
+    update_acc,
+    copy_int,
+    copy_float
 )
 
 from qqtt.model.diff_simulator.spring_mass_warp import (
@@ -25,17 +31,46 @@ if not cfg.use_graph:
     wp.config.verbose = True
     wp.config.verify_autograd_array_access = True
 
+def gather_spring_endpoints(x, control_x, num_object_points, springs):
+    num_springs = springs.shape[0]
+    device = x.device
+    dtype = x.dtype
+
+    # Preallocate just the final needed shape
+    spring_pos = torch.empty((num_springs, 2, 3), device=device, dtype=dtype)
+
+    idx1 = springs[:, 0]
+    idx2 = springs[:, 1]
+
+    is_obj1 = idx1 < num_object_points
+    is_obj2 = idx2 < num_object_points
+
+    assert torch.all((idx1[is_obj1] >= 0) & (idx1[is_obj1] < num_object_points)), \
+        f"Invalid spring index found: {idx1[(idx1 < 0) | (idx1 >= num_object_points)]}"
+
+
+    # First endpoint
+    spring_pos[is_obj1, 0] = x[idx1[is_obj1]]
+    spring_pos[~is_obj1, 0] = control_x[idx1[~is_obj1] - num_object_points]
+
+    # Second endpoint
+    spring_pos[is_obj2, 1] = x[idx2[is_obj2]]
+    spring_pos[~is_obj2, 1] = control_x[idx2[~is_obj2] - num_object_points]
+    
+    return spring_pos
+
 def eval_springs_energy(
     x: torch.Tensor,
+    control_x: torch.Tensor,
     dx: torch.Tensor,
     springs: torch.Tensor,
     spring_l0s: torch.Tensor,
-    num_springs: float,
+    num_springs: int,
     spring_k: float,
     dashpot_damping: float
 ):
-    t_spring_k = torch.Tensor([spring_k], device="cuda")
-    t_spring_b = torch.Tensor([dashpot_damping], device="cuda")
+    t_spring_k = torch.tensor([spring_k], device="cuda")
+    t_spring_b = torch.tensor([dashpot_damping], device="cuda")
 
     num_samples, num_particles, _ = x.shape
     epsi_ks = 1e-6
@@ -45,15 +80,15 @@ def eval_springs_energy(
     spring_ks = torch.broadcast_to(
         t_spring_k.view(1, 1, 1),
         (1, num_springs, 1))
-    spring_ks_pos = torch.nn.ReLU(spring_ks) + epsi_ks
+    positive_fun = torch.nn.ReLU().to("cuda")
+    spring_ks_pos = positive_fun(spring_ks) + epsi_ks
     spring_bs = torch.broadcast_to(
         t_spring_b.view(1, 1, 1),
         (1, num_springs, 1))
-    spring_bs_pos = torch.nn.ReLU(spring_bs) + epsi_bs
+    spring_bs_pos = positive_fun(spring_bs) + epsi_bs
 
     # extract end point positions of each spring
-    spring_pos = x[:, springs].view(
-        num_samples, num_springs, 2, 3)
+    spring_pos = gather_spring_endpoints(x, control_x, num_particles, springs)  # (1, num_springs, 2, 3)
     
     # compute each spring's direction vec
     d = spring_pos[:, :, 1] - spring_pos[:, :, 0]
@@ -99,7 +134,7 @@ def eval_springs_energy(
         dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
             1, num_springs, 1)
     
-    spring_bs_pos = torch.nn.ReLU(
+    spring_bs_pos = positive_fun(
         spring_bs.view(1, num_springs, 1)) + epsi_bs
     e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
     e_damping = e_damping.view(1, num_springs, 1)
@@ -293,6 +328,7 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
         v_before_ground: torch.Tensor,
         vertice_forces: torch.Tensor,
         num_object_points: int,
+        control_x: torch.Tensor,
         wp_masses: wp.array,
         drag_damping: float,
         wp_collide_elas: wp.array,
@@ -333,7 +369,8 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
                 
                 # Evaluate spring energies at current state
                 elastic_energy, damping_energy = eval_springs_energy(
-                    current_x_torch.unsqueeze(0), 
+                    current_x_torch.unsqueeze(0),
+                    control_x, 
                     current_v_torch.unsqueeze(0),
                     springs,
                     spring_l0s,
@@ -471,3 +508,432 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
             None,                           # spring_k
             None,                           # dashpot_damping
         )
+    
+class SpringMassSystemHybrid:
+    def __init__(
+        self,
+        init_vertices,
+        init_springs,
+        init_rest_lengths,
+        init_masses,
+        dt,
+        num_substeps,
+        spring_Y,
+        collide_elas,
+        collide_fric,
+        dashpot_damping,
+        drag_damping,
+        collide_object_elas=0.7,
+        collide_object_fric=0.3,
+        init_masks=None,
+        collision_dist=0.02,
+        init_velocities=None,
+        num_object_points=None,
+        num_surface_points=None,
+        num_original_points=None,
+        controller_points=None,
+        reverse_z=False,
+        spring_Y_min=1e3,
+        spring_Y_max=1e5,
+        gt_object_points=None,
+        gt_object_visibilities=None,
+        gt_object_motions_valid=None,
+        self_collision=False,
+        disable_backward=False,
+    ):
+        logger.info(f"[SIMULATION]: Initialize the Spring-Mass System")
+        self.device = cfg.device
+
+        # Record the parameters
+        self.wp_init_vertices = wp.from_torch(
+            init_vertices[:num_object_points].contiguous(),
+            dtype=wp.vec3,
+            requires_grad=False,
+        )
+        if init_velocities is None:
+            self.wp_init_velocities = wp.zeros_like(
+                self.wp_init_vertices, requires_grad=False
+            )
+        else:
+            self.wp_init_velocities = wp.from_torch(
+                init_velocities[:num_object_points].contiguous(),
+                dtype=wp.vec3,
+                requires_grad=False,
+            )
+
+        self.n_vertices = init_vertices.shape[0]
+        self.n_springs = init_springs.shape[0]
+
+        self.dt = dt
+        self.num_substeps = num_substeps
+        self.dashpot_damping = dashpot_damping
+        self.drag_damping = drag_damping
+        self.reverse_factor = 1.0 if not reverse_z else -1.0
+        self.spring_Y_min = spring_Y_min
+        self.spring_Y_max = spring_Y_max
+
+        if controller_points is None:
+            assert num_object_points == self.n_vertices
+        else:
+            assert (controller_points.shape[1] + num_object_points) == self.n_vertices
+        self.num_object_points = num_object_points
+        self.num_control_points = (
+            controller_points.shape[1] if not controller_points is None else 0
+        )
+        self.controller_points = controller_points
+
+        # Deal with the any collision detection
+        self.object_collision_flag = 0
+        if init_masks is not None:
+            if torch.unique(init_masks).shape[0] > 1:
+                self.object_collision_flag = 1
+
+        if self_collision:
+            assert init_masks is None
+            self.object_collision_flag = 1
+            # Make all points as the collision points
+            init_masks = torch.arange(
+                self.n_vertices, dtype=torch.int32, device=self.device
+            )
+
+        if self.object_collision_flag:
+            self.wp_masks = wp.from_torch(
+                init_masks[:num_object_points].int(),
+                dtype=wp.int32,
+                requires_grad=False,
+            )
+
+            self.collision_grid = wp.HashGrid(128, 128, 128)
+            self.collision_dist = collision_dist
+
+            self.wp_collision_indices = wp.zeros(
+                (self.wp_init_vertices.shape[0], 500),
+                dtype=wp.int32,
+                requires_grad=False,
+            )
+            self.wp_collision_number = wp.zeros(
+                (self.wp_init_vertices.shape[0]), dtype=wp.int32, requires_grad=False
+            )
+
+        # Initialize the GT for calculating losses
+        self.gt_object_points = gt_object_points
+        if cfg.data_type == "real":
+            self.gt_object_visibilities = gt_object_visibilities.int()
+            self.gt_object_motions_valid = gt_object_motions_valid.int()
+
+        self.num_surface_points = num_surface_points
+        self.num_original_points = num_original_points
+        if num_original_points is None:
+            self.num_original_points = self.num_object_points
+
+        # Store spring parameters for hybrid integrator
+        self.springs = init_springs
+        self.spring_l0s = init_rest_lengths
+        self.spring_k = spring_Y  # Using spring_Y as spring_k
+
+        # Store masses and collision parameters
+        self.wp_masses = wp.from_torch(
+            init_masses[:num_object_points], dtype=wp.float32, requires_grad=False
+        )
+        
+        if cfg.data_type == "real":
+            self.prev_acc = wp.zeros_like(self.wp_init_vertices, requires_grad=False)
+            self.acc_count = wp.zeros(1, dtype=wp.int32, requires_grad=False)
+
+        self.wp_current_object_points = wp.from_torch(
+            self.gt_object_points[1].clone(), dtype=wp.vec3, requires_grad=False
+        )
+        
+        if cfg.data_type == "real":
+            self.wp_current_object_visibilities = wp.from_torch(
+                self.gt_object_visibilities[1].clone(),
+                dtype=wp.int32,
+                requires_grad=False,
+            )
+            self.wp_current_object_motions_valid = wp.from_torch(
+                self.gt_object_motions_valid[0].clone(),
+                dtype=wp.int32,
+                requires_grad=False,
+            )
+            self.num_valid_visibilities = int(self.gt_object_visibilities[1].sum())
+            self.num_valid_motions = int(self.gt_object_motions_valid[0].sum())
+
+            self.wp_original_control_point = wp.from_torch(
+                self.controller_points[0].clone(), dtype=wp.vec3, requires_grad=False
+            )
+            self.wp_target_control_point = wp.from_torch(
+                self.controller_points[1].clone(), dtype=wp.vec3, requires_grad=False
+            )
+
+        # Initialize collision parameters
+        self.wp_collide_elas = wp.from_torch(
+            torch.tensor([collide_elas], dtype=torch.float32, device=self.device),
+            requires_grad=cfg.collision_learn,
+        )
+        self.wp_collide_fric = wp.from_torch(
+            torch.tensor([collide_fric], dtype=torch.float32, device=self.device),
+            requires_grad=cfg.collision_learn,
+        )
+        self.wp_collide_object_elas = wp.from_torch(
+            torch.tensor(
+                [collide_object_elas], dtype=torch.float32, device=self.device
+            ),
+            requires_grad=cfg.collision_learn,
+        )
+        self.wp_collide_object_fric = wp.from_torch(
+            torch.tensor(
+                [collide_object_fric], dtype=torch.float32, device=self.device
+            ),
+            requires_grad=cfg.collision_learn,
+        )
+
+        # Current state for step and loss computation
+        self.current_x = None
+        self.current_v = None
+        self.current_v_before_collision = None
+        self.current_v_before_ground = None
+        self.current_forces = None
+        self.current_loss = None
+
+        # Initialize with starting state
+        self.reset_to_initial_state()
+
+        # Note: Removed CUDA graph creation since we're using PyTorch autograd functions
+        # The hybrid functions handle their own gradient computation
+
+    def reset_to_initial_state(self):
+        """Reset to initial state"""
+        self.current_x = wp.to_torch(self.wp_init_vertices).clone().requires_grad_(True)
+        self.current_v = wp.to_torch(self.wp_init_velocities).clone().requires_grad_(True)
+        self.current_v_before_collision = self.current_v.clone()
+        self.current_v_before_ground = self.current_v.clone()
+        self.current_forces = torch.zeros_like(self.current_x)
+
+    def set_controller_target(self, frame_idx, pure_inference=False):
+        if self.controller_points is not None:
+            # Set the controller points
+            wp.launch(
+                copy_vec3,
+                dim=self.num_control_points,
+                inputs=[self.controller_points[frame_idx - 1]],
+                outputs=[self.wp_original_control_point],
+            )
+            wp.launch(
+                copy_vec3,
+                dim=self.num_control_points,
+                inputs=[self.controller_points[frame_idx]],
+                outputs=[self.wp_target_control_point],
+            )
+
+        if not pure_inference:
+            # Set the target points
+            wp.launch(
+                copy_vec3,
+                dim=self.num_original_points,
+                inputs=[self.gt_object_points[frame_idx]],
+                outputs=[self.wp_current_object_points],
+            )
+
+            if cfg.data_type == "real":
+                wp.launch(
+                    copy_int,
+                    dim=self.num_original_points,
+                    inputs=[self.gt_object_visibilities[frame_idx]],
+                    outputs=[self.wp_current_object_visibilities],
+                )
+                wp.launch(
+                    copy_int,
+                    dim=self.num_original_points,
+                    inputs=[self.gt_object_motions_valid[frame_idx - 1]],
+                    outputs=[self.wp_current_object_motions_valid],
+                )
+
+                self.num_valid_visibilities = int(
+                    self.gt_object_visibilities[frame_idx].sum()
+                )
+                self.num_valid_motions = int(
+                    self.gt_object_motions_valid[frame_idx - 1].sum()
+                )
+
+    def set_controller_interactive(
+        self, last_controller_interactive, controller_interactive
+    ):
+        # Set the controller points
+        wp.launch(
+            copy_vec3,
+            dim=self.num_control_points,
+            inputs=[last_controller_interactive],
+            outputs=[self.wp_original_control_point],
+        )
+        wp.launch(
+            copy_vec3,
+            dim=self.num_control_points,
+            inputs=[controller_interactive],
+            outputs=[self.wp_target_control_point],
+        )
+
+    def set_init_state(self, wp_x, wp_v, pure_inference=False):
+        """Set initial state from warp arrays"""
+        assert (
+            self.num_object_points == wp_x.shape[0]
+        )
+
+        # Convert warp arrays to torch tensors
+        self.current_x = wp.to_torch(wp_x).clone().requires_grad_(True)
+        self.current_v = wp.to_torch(wp_v).clone().requires_grad_(True)
+        self.current_v_before_collision = self.current_v.clone()
+        self.current_v_before_ground = self.current_v.clone()
+
+    def set_acc_count(self, acc_count):
+        if acc_count:
+            input = 1
+        else:
+            input = 0
+        wp.launch(
+            set_int,
+            dim=1,
+            inputs=[input],
+            outputs=[self.acc_count],
+        )
+
+    def update_acc(self):
+        """Update acceleration for loss computation"""
+        if cfg.data_type == "real":
+            wp.launch(
+                update_acc,
+                dim=self.num_object_points,
+                inputs=[
+                    wp.from_torch(self.current_v.detach()),
+                    wp.from_torch(self.current_v.detach()),  # Will be updated after step
+                ],
+                outputs=[self.prev_acc],
+            )
+
+    def update_collision_graph(self):
+        assert self.object_collision_flag
+        wp_x = wp.from_torch(self.current_x.detach(), dtype=wp.vec3)
+        self.collision_grid.build(wp_x, self.collision_dist * 5.0)
+        self.wp_collision_number.zero_()
+        wp.launch(
+            update_potential_collision,
+            dim=self.num_object_points,
+            inputs=[
+                wp_x,
+                self.wp_masks,
+                self.collision_dist,
+                self.collision_grid.id,
+            ],
+            outputs=[self.wp_collision_indices, self.wp_collision_number],
+        )
+
+    def step(self):
+        """Use hybrid integrator to compute next simulation state"""
+        # Use the hybrid integrator
+        (
+            self.current_x,
+            self.current_v,
+            self.current_v_before_collision,
+            self.current_v_before_ground,
+            self.current_forces
+        ) = MassSpringHybridIntegrator.apply(
+            self.current_x,
+            self.current_v,
+            self.current_v_before_collision,
+            self.current_v_before_ground,
+            self.current_forces,
+            self.num_object_points,
+            self.controller_points,
+            self.wp_masses,
+            self.drag_damping,
+            self.wp_collide_elas,
+            self.wp_collide_fric,
+            self.reverse_factor,
+            self.dt,
+            self.num_substeps,
+            self.springs,
+            self.spring_l0s,
+            self.spring_k,
+            self.dashpot_damping
+        )
+
+    def calculate_loss(self):
+        """Use hybrid loss function to compute loss"""
+        if cfg.data_type == "real":
+            # Get initial velocity for acceleration loss
+            v_initial = wp.to_torch(self.wp_init_velocities).requires_grad_(True)
+            
+            # Compute acceleration count
+            acc_count_value = float(wp.to_torch(self.acc_count).item())
+            
+            self.current_loss = MassSpringLoss.apply(
+                self.current_x,
+                self.current_v,
+                v_initial,
+                self.num_original_points,
+                self.num_object_points,
+                self.num_surface_points,
+                float(self.num_valid_visibilities),
+                cfg.track_weight,
+                cfg.chamfer_weight,
+                cfg.acc_weight,
+                self.prev_acc,
+                acc_count_value,
+                self.num_valid_motions,
+                self.wp_current_object_points,
+                self.wp_current_object_visibilities,
+                self.wp_current_object_motions_valid
+            )
+        else:
+            # For synthetic data, compute simple L2 loss
+            gt_points = wp.to_torch(self.wp_current_object_points)
+            self.current_loss = torch.mean(torch.sum((self.current_x - gt_points) ** 2, dim=-1))
+
+    def calculate_simple_loss(self):
+        """Calculate simple L2 loss for synthetic data"""
+        gt_points = wp.to_torch(self.wp_current_object_points)
+        self.current_loss = torch.mean(torch.sum((self.current_x - gt_points) ** 2, dim=-1))
+
+    def clear_loss(self):
+        """Clear current loss"""
+        self.current_loss = None
+
+    # Functions used to load the parameters
+    def set_spring_Y(self, spring_Y):
+        """Set spring stiffness parameter"""
+        self.spring_k = spring_Y.item() if hasattr(spring_Y, 'item') else float(spring_Y)
+
+    def set_collide(self, collide_elas, collide_fric):
+        wp.launch(
+            copy_float,
+            dim=1,
+            inputs=[collide_elas],
+            outputs=[self.wp_collide_elas],
+        )
+        wp.launch(
+            copy_float,
+            dim=1,
+            inputs=[collide_fric],
+            outputs=[self.wp_collide_fric],
+        )
+
+    def set_collide_object(self, collide_object_elas, collide_object_fric):
+        wp.launch(
+            copy_float,
+            dim=1,
+            inputs=[collide_object_elas],
+            outputs=[self.wp_collide_object_elas],
+        )
+        wp.launch(
+            copy_float,
+            dim=1,
+            inputs=[collide_object_fric],
+            outputs=[self.wp_collide_object_fric],
+        )
+
+    def get_current_state(self):
+        """Get current simulation state as torch tensors"""
+        return self.current_x, self.current_v
+
+    def get_current_loss(self):
+        """Get current loss value"""
+        return self.current_loss

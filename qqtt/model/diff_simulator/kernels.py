@@ -402,7 +402,6 @@ def compute_track_loss(
 
         wp.atomic_add(track_loss, 0, final_track_loss)
 
-
 @wp.kernel(enable_backward=False)
 def set_int(input: int, output: wp.array(dtype=wp.int32)):
     output[0] = input

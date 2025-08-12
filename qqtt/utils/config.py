@@ -40,7 +40,7 @@ class Config:
         self.self_collision = False
 
         # DEBUG mode: set use_graph to False
-        self.use_graph = True
+        self.use_graph = False # If we're using pytorch, we may not be able use graph.
 
         # Attribute for the real
         self.chamfer_weight = 1.0

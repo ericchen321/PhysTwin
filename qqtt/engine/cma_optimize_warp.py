@@ -1,6 +1,7 @@
 from qqtt.data import RealData, SimpleData
 from qqtt.utils import logger, visualize_pc, cfg
 from qqtt.model.diff_simulator import SpringMassSystemWarp
+from qqtt.model.diff_simulator import SpringMassSystemHybrid
 import open3d as o3d
 import numpy as np
 import torch
@@ -362,7 +363,7 @@ class OptimizerCMA:
             mask=self.init_masks,
         )
 
-        self.simulator = SpringMassSystemWarp(
+        self.simulator = SpringMassSystemHybrid( # SpringMassSystemWarp(
             self.init_vertices,
             self.init_springs,
             self.init_rest_lengths,
@@ -399,7 +400,7 @@ class OptimizerCMA:
 
         if visualize == True:
             vertices = [
-                wp.to_torch(self.simulator.wp_states[0].wp_x, requires_grad=False).cpu()
+                self.simulator.current_x.cpu()
             ]
 
         if cfg.data_type == "real":
@@ -423,13 +424,11 @@ class OptimizerCMA:
                 wp.capture_launch(self.simulator.graph)
             else:
                 if cfg.data_type == "real":
-                    with self.simulator.tape:
-                        self.simulator.step()
-                        self.simulator.calculate_loss()
+                    self.simulator.step()
+                    self.simulator.calculate_loss()
                 else:
-                    with self.simulator.tape:
-                        self.simulator.step()
-                        self.simulator.calculate_simple_loss()
+                    self.simulator.step()
+                    self.simulator.calculate_simple_loss()
 
             if visualize == True:
                 x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
@@ -451,14 +450,14 @@ class OptimizerCMA:
                 # Update the prev_acc used to calculate the acceleration loss
                 self.simulator.update_acc()
 
-            loss = wp.to_torch(self.simulator.loss, requires_grad=False)
-            total_loss += loss.item()
+            #loss = wp.to_torch(self.simulator.loss, requires_grad=False)
+            total_loss += self.simulator.loss.item() #loss.item()
 
             self.simulator.clear_loss()
             # Set the intial state for the next step
             self.simulator.set_init_state(
-                self.simulator.wp_states[-1].wp_x,
-                self.simulator.wp_states[-1].wp_v,
+                self.simulator.current_x,
+                self.simulator.current_v,
             )
 
         total_loss /= cfg.train_frame - 1
