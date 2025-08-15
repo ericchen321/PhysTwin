@@ -431,19 +431,24 @@ class OptimizerCMA:
                     self.simulator.calculate_simple_loss()
 
             if visualize == True:
-                x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
+                x = torch.clone(self.simulator.current_x) #wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
+                x.detach()
                 vertices.append(x.cpu())
 
             if cfg.data_type == "real":
                 if wp.to_torch(self.simulator.acc_count, requires_grad=False)[0] == 0:
                     self.simulator.set_acc_count(True)
 
-                chamfer_loss = wp.to_torch(
-                    self.simulator.chamfer_loss, requires_grad=False
-                )
-                track_loss = wp.to_torch(
-                    self.simulator.track_loss, requires_grad=False
-                )
+                chamfer_loss = self.simulator.chamfer_loss
+                # chamfer_loss = wp.to_torch(
+                #     self.simulator.chamfer_loss, requires_grad=False
+                # )
+
+                track_loss = self.simulator.track_loss
+                # track_loss = wp.to_torch(
+                #     self.simulator.track_loss, requires_grad=False
+                # )
+
                 total_track_loss += track_loss.item()
                 total_chamfer_loss += chamfer_loss.item()
 
@@ -451,7 +456,7 @@ class OptimizerCMA:
                 self.simulator.update_acc()
 
             #loss = wp.to_torch(self.simulator.loss, requires_grad=False)
-            total_loss += self.simulator.loss.item() #loss.item()
+            total_loss += self.simulator.current_loss.item() #loss.item()
 
             self.simulator.clear_loss()
             # Set the intial state for the next step
@@ -483,16 +488,14 @@ class OptimizerCMA:
             "collide_object_fric": wp.to_torch(
                 self.simulator.wp_collide_object_fric, requires_grad=False
             ).item(),
-            "log_spring_Y": wp.to_torch(
-                self.simulator.wp_spring_Y, requires_grad=False
-            )[0].item(),
+            "log_spring_Y": self.simulator.spring_k[0].item(),
             "spring_Y": torch.exp(
-                wp.to_torch(self.simulator.wp_spring_Y, requires_grad=False)
+                self.simulator.spring_k
             )[0].item(),
         }
 
         if visualize == True:
-            vertices = torch.stack(vertices, dim=0)
+            vertices = torch.stack(vertices, dim=0).detach()
             visualize_pc(
                 vertices[:, : self.num_all_points, :],
                 self.object_colors,

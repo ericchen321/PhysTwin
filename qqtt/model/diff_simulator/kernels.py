@@ -35,6 +35,44 @@ def set_control_points(
         + (target_control_point[tid] - original_control_point[tid]) * t
     )
 
+@wp.kernel
+def compute_spring_dist(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    control_x: wp.array(dtype=wp.vec3),
+    control_v: wp.array(dtype=wp.vec3),
+    springs: wp.array(dtype=wp.vec2i),
+    spring_l0s: wp.array(dtype=float),
+    num_object_points: int,
+    ds: wp.array(dtype=wp.vec3),
+    vrels: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+    #if wp.exp(spring_Y[tid]) > spring_Y_min:
+
+    idx1 = springs[tid][0]
+    idx2 = springs[tid][1]
+
+    if idx1 >= num_object_points:
+        x1 = control_x[idx1 - num_object_points]
+        v1 = control_v[idx1 - num_object_points]
+    else:
+        x1 = x[idx1]
+        v1 = v[idx1]
+    if idx2 >= num_object_points:
+        x2 = control_x[idx2 - num_object_points]
+        v2 = control_v[idx2 - num_object_points]
+    else:
+        x2 = x[idx2]
+        v2 = v[idx2]
+
+    rest = spring_l0s[tid]
+
+    d = x2 - x1
+    vrel = v2 - v1
+
+    ds[tid] = d
+    vrels[tid] = vrel
 
 @wp.kernel
 def eval_springs(

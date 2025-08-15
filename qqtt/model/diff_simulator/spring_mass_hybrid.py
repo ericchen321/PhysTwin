@@ -17,7 +17,9 @@ from qqtt.model.diff_simulator.kernels import (
     update_potential_collision,
     update_acc,
     copy_int,
-    copy_float
+    copy_float,
+    compute_spring_dist,
+    set_control_points
 )
 
 from qqtt.model.diff_simulator.spring_mass_warp import (
@@ -59,91 +61,90 @@ def gather_spring_endpoints(x, control_x, num_object_points, springs):
     
     return spring_pos
 
-def eval_springs_energy(
-    x: torch.Tensor,
-    control_x: torch.Tensor,
-    dx: torch.Tensor,
-    springs: torch.Tensor,
-    spring_l0s: torch.Tensor,
-    num_springs: int,
-    spring_k: float,
-    dashpot_damping: float
-):
-    t_spring_k = torch.tensor([spring_k], device="cuda")
-    t_spring_b = torch.tensor([dashpot_damping], device="cuda")
+# def eval_springs_energy(
+#     x: torch.Tensor,
+#     control_x: torch.Tensor,
+#     dx: torch.Tensor,
+#     springs: torch.Tensor,
+#     spring_l0s: torch.Tensor,
+#     num_springs: int,
+#     spring_k: float,
+#     dashpot_damping: float
+# ):
+#     t_spring_k = torch.tensor([spring_k], device="cuda")
+#     t_spring_b = torch.tensor([dashpot_damping], device="cuda")
 
-    num_samples, num_particles, _ = x.shape
-    epsi_ks = 1e-6
-    epsi_bs = 1e-6
+#     num_samples, num_particles, _ = x.shape
+#     epsi_ks = 1e-6
+#     epsi_bs = 1e-6
 
-    # expand spring k and b, and apply positivity func
-    spring_ks = torch.broadcast_to(
-        t_spring_k.view(1, 1, 1),
-        (1, num_springs, 1))
-    positive_fun = torch.nn.ReLU().to("cuda")
-    spring_ks_pos = positive_fun(spring_ks) + epsi_ks
-    spring_bs = torch.broadcast_to(
-        t_spring_b.view(1, 1, 1),
-        (1, num_springs, 1))
-    spring_bs_pos = positive_fun(spring_bs) + epsi_bs
+#     # expand spring k and b, and apply positivity func
+#     spring_ks = torch.broadcast_to(
+#         t_spring_k.view(1, 1, 1),
+#         (1, num_springs, 1))
+#     positive_fun = torch.nn.ReLU().to("cuda")
+#     spring_ks_pos = positive_fun(spring_ks) + epsi_ks
+#     spring_bs = torch.broadcast_to(
+#         t_spring_b.view(1, 1, 1),
+#         (1, num_springs, 1))
+#     spring_bs_pos = positive_fun(spring_bs) + epsi_bs
 
-    # extract end point positions of each spring
-    spring_pos = gather_spring_endpoints(x, control_x, num_particles, springs)  # (1, num_springs, 2, 3)
+#     # extract end point positions of each spring
+#     spring_pos = gather_spring_endpoints(x, control_x, num_particles, springs)  # (1, num_springs, 2, 3)
     
-    # compute each spring's direction vec
-    d = spring_pos[:, :, 1] - spring_pos[:, :, 0]
-    d = d.view(num_samples, num_springs, 3)
+#     # compute each spring's direction vec
+#     d = spring_pos[:, :, 1] - spring_pos[:, :, 0]
+#     d = d.view(num_samples, num_springs, 3)
 
-    # compute each spring's length
-    spring_l = torch.linalg.vector_norm(
-        d, dim=-1).view(num_samples, num_springs, 1)
+#     # compute each spring's length
+#     spring_l = torch.linalg.vector_norm(
+#         d, dim=-1).view(num_samples, num_springs, 1)
 
-    # compute elastic energy
-    l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
-    e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
+#     # compute elastic energy
+#     l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
+#     e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
 
-    # compute strain
-    strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
+#     # compute strain
+#     strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
 
-    # compute relative velocity betwen endpoints
-    spring_vel = dx[:, springs].view(
-        1, num_springs, 2, 3)
-    vrel = spring_vel[:, :, 1] - spring_vel[:, :, 0]
-    vrel = vrel.view(1, num_springs, 3)
+#     # compute relative velocity betwen endpoints
+#     spring_vel = dx[:, springs].view(
+#         1, num_springs, 2, 3)
+#     vrel = spring_vel[:, :, 1] - spring_vel[:, :, 0]
+#     vrel = vrel.view(1, num_springs, 3)
 
 
-    # compute velocity along spring direction
-    d_unit = d / (torch.linalg.vector_norm(
-        d, dim=-1, keepdim=True) + 1e-6)
-    vrel_proj_speed = torch.sum(
-        vrel * d_unit, dim=-1, keepdim=True).view(
-            1, num_springs, 1)
-    vrel_proj = vrel_proj_speed * d_unit
-    vrel_proj = vrel_proj.view(1, num_springs, 3)
+#     # compute velocity along spring direction
+#     d_unit = d / (torch.linalg.vector_norm(
+#         d, dim=-1, keepdim=True) + 1e-6)
+#     vrel_proj_speed = torch.sum(
+#         vrel * d_unit, dim=-1, keepdim=True).view(
+#             1, num_springs, 1)
+#     vrel_proj = vrel_proj_speed * d_unit
+#     vrel_proj = vrel_proj.view(1, num_springs, 3)
 
-    # compute strain rate as follows: first, compute grad of
-    # of strain wrt relative pos d; then dot product with the
-    # relative velocity along spring direction
-    dstrain_dd = torch.autograd.grad(
-        strain,
-        d,
-        grad_outputs=torch.ones_like(strain),
-        create_graph=True, retain_graph=True)[0]
-    dstrain_dd = dstrain_dd.view(1, num_springs, 3)
-    strain_rate = torch.sum(
-        dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
-            1, num_springs, 1)
+#     # compute strain rate as follows: first, compute grad of
+#     # of strain wrt relative pos d; then dot product with the
+#     # relative velocity along spring direction
+#     dstrain_dd = torch.autograd.grad(
+#         strain,
+#         d,
+#         grad_outputs=torch.ones_like(strain),
+#         create_graph=True, retain_graph=True)[0]
+#     dstrain_dd = dstrain_dd.view(1, num_springs, 3)
+#     strain_rate = torch.sum(
+#         dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
+#             1, num_springs, 1)
     
-    spring_bs_pos = positive_fun(
-        spring_bs.view(1, num_springs, 1)) + epsi_bs
-    e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
-    e_damping = e_damping.view(1, num_springs, 1)
+#     spring_bs_pos = positive_fun(
+#         spring_bs.view(1, num_springs, 1)) + epsi_bs
+#     e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
+#     e_damping = e_damping.view(1, num_springs, 1)
 
-    return {
-        "energy_elastic": e_elastic,
-        "energy_damping": e_damping
-    }
-
+#     return {
+#         "energy_elastic": e_elastic,
+#         "energy_damping": e_damping
+#     }
 
 class MassSpringLoss(torch.autograd.Function):
     @staticmethod
@@ -155,12 +156,12 @@ class MassSpringLoss(torch.autograd.Function):
         num_original_points: int,
         num_object_points: int,
         num_surface_points: int,
-        num_valid_visibilities: float,
+        num_valid_visibilities: int,
         track_weight: float,
         chamfer_weight: float,
         acc_weight: float,
         prev_acc: torch.Tensor,
-        acc_count: float,
+        acc_count: wp.array,
         num_valid_motions: int,
         current_object_points: wp.array,
         current_object_visibilities: wp.array,
@@ -172,9 +173,9 @@ class MassSpringLoss(torch.autograd.Function):
         acc_loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
         loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
 
-        wp_x_curr = wp.from_torch(x_curr, requires_grad=True)
-        wp_v_curr = wp.from_torch(v_curr, requires_grad=True)
-        wp_v_initial = wp.from_torch(v_initial, requires_grad=True)
+        wp_x_curr = wp.from_torch(x_curr, dtype=wp.vec3f, requires_grad=True)
+        wp_v_curr = wp.from_torch(v_curr, dtype=wp.vec3f, requires_grad=True)
+        wp_v_initial = wp.from_torch(v_initial, dtype=wp.vec3f, requires_grad=True)
 
         # Create warp tensors for loss components
         wp_chamfer_loss = wp.from_torch(chamfer_loss, requires_grad=True)
@@ -264,6 +265,9 @@ class MassSpringLoss(torch.autograd.Function):
 
         # Convert back to torch
         final_loss = wp.to_torch(wp_loss)
+        chamfer_loss = wp.to_torch(wp_chamfer_loss)
+        track_loss = wp.to_torch(wp_track_loss)
+        acc_loss = wp.to_torch(wp_acc_loss)
         
         # Save context for backward pass
         ctx.save_for_backward(x_curr, v_curr, v_initial)
@@ -272,17 +276,17 @@ class MassSpringLoss(torch.autograd.Function):
         ctx.wp_v_initial = wp_v_initial
         ctx.wp_loss = wp_loss
 
-        return final_loss
+        return final_loss, chamfer_loss, track_loss, acc_loss
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx, dL_dL, *grad_outputs):
         """
         Implement backward pass for MassSpringLoss
         """
         x_curr, v_curr, v_initial = ctx.saved_tensors
         
         # Set the gradient of the loss to the incoming gradient
-        ctx.wp_loss.grad = wp.from_torch(grad_output)
+        ctx.wp_loss.grad = wp.from_torch(dL_dL)
         
         # Run backward pass through the tape
         ctx.tape.backward(loss=ctx.wp_loss)
@@ -318,7 +322,297 @@ class MassSpringLoss(torch.autograd.Function):
             None,             # current_object_motions_valid
         )
 
-class MassSpringHybridIntegrator(torch.autograd.Function):
+class ComputeStrainRate(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        dx: torch.Tensor,
+        control_x: torch.Tensor,
+        control_v: torch.Tensor,
+        springs: torch.Tensor,
+        spring_l0s: torch.Tensor):
+
+        num_samples = 1
+        num_particles, _ = x.shape
+        num_springs, _ = springs.shape
+
+        ctx.tape = wp.Tape()
+        with ctx.tape:
+            wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
+            wp_v = wp.from_torch(dx, dtype=wp.vec3, requires_grad=True)
+
+            wp_control_x = wp.from_torch(control_x, dtype=wp.vec3, requires_grad=True)
+            wp_control_v = wp.from_torch(control_v, dtype=wp.vec3, requires_grad=True)
+
+            wp_springs = wp.from_torch(springs, dtype=wp.vec2i, requires_grad=True)
+            wp_spring_l0s = wp.from_torch(spring_l0s, requires_grad=True)
+
+            wp_d = wp.zeros(num_springs, dtype=wp.vec3)
+            wp_vrel = wp.zeros_like(wp_d)
+
+            wp.launch(
+                kernel=compute_spring_dist,
+                dim=num_springs,
+                inputs=[
+                    wp_x,
+                    wp_v,
+                    wp_control_x,
+                    wp_control_v,
+                    wp_springs,
+                    wp_spring_l0s,
+                    num_particles
+                ],
+                outputs=[
+                    wp_d,
+                    wp_vrel
+                ]
+            )
+
+        d = wp.to_torch(wp_d, requires_grad=True)
+        vrel = wp.to_torch(wp_vrel, requires_grad=True)
+
+        # compute strain
+        with torch.enable_grad():
+            # compute each spring's length
+            spring_l = torch.linalg.vector_norm(
+                d, dim=-1).view(num_samples, num_springs, 1)
+
+            # compute elastic energy
+            l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
+
+            strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
+
+        # compute velocity along spring direction
+        d_unit = d / (torch.linalg.vector_norm(
+            d, dim=-1, keepdim=True) + 1e-6)
+        vrel_proj_speed = torch.sum(
+            vrel * d_unit, dim=-1, keepdim=True).view(
+                1, num_springs, 1)
+        vrel_proj = vrel_proj_speed * d_unit
+        vrel_proj = vrel_proj.view(1, num_springs, 3)
+
+        # compute strain rate as follows: first, compute grad of
+        # of strain wrt relative pos d; then dot product with the
+        # relative velocity along spring direction
+        dstrain_dd = torch.autograd.grad(
+            strain,
+            d,
+            grad_outputs=torch.ones_like(strain),
+            create_graph=True, retain_graph=True)[0]
+        dstrain_dd = dstrain_dd.view(1, num_springs, 3)
+        strain_rate = torch.sum(
+            dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
+                1, num_springs, 1)
+        
+        # Save context for backward pass
+        ctx.save_for_backward(x, dx, control_x, control_v, springs, spring_l0s)
+        ctx.wp_x = wp_x
+        ctx.wp_v = wp_v
+        ctx.wp_control_x = wp_control_x
+        ctx.wp_control_v = wp_control_v
+        ctx.wp_springs = wp_springs
+        ctx.wp_spring_l0s = wp_spring_l0s
+        ctx.wp_d = wp_d
+        ctx.wp_vrel = wp_vrel
+        ctx.num_particles = num_particles
+
+        return strain_rate, l_m_l0
+
+    @staticmethod
+    def backward(ctx, grad_strain_rate, grad_l_m_l0):
+        """
+        Backward pass for ComputeStrainRate
+        """
+        x, v, control_x, control_v, springs, spring_l0s = ctx.saved_tensors
+        
+        # Set gradients on outputs
+        if grad_strain_rate is not None:
+            # Since strain_rate computation involves complex operations on d and vrel,
+            # we need to propagate gradients through the warp computation
+            pass
+        
+        if grad_l_m_l0 is not None:
+            # l_m_l0 also depends on d through spring_l calculation
+            pass
+        
+        # For the warp operations, we need to set gradients and run backward
+        # The key insight is that both strain_rate and l_m_l0 depend on wp_d
+        # which comes from the warp kernel computation
+        
+        # Since the torch operations after warp are differentiable,
+        # PyTorch will handle most of the gradient computation.
+        # We mainly need to handle gradients w.r.t. the warp inputs
+        
+        # Convert gradients and propagate through warp tape
+        if ctx.wp_d.grad is None:
+            ctx.wp_d.grad = wp.zeros_like(ctx.wp_d)
+        if ctx.wp_vrel.grad is None:
+            ctx.wp_vrel.grad = wp.zeros_like(ctx.wp_vrel)
+            
+        # Run backward pass through warp operations
+        ctx.tape.backward(grads={ctx.wp_d: ctx.wp_d.grad, ctx.wp_vrel: ctx.wp_vrel.grad})
+        
+        # Extract gradients w.r.t. inputs
+        grad_x = None
+        grad_v = None
+        grad_control_x = None
+        grad_control_v = None
+        
+        if ctx.wp_x.grad is not None:
+            grad_x = wp.to_torch(ctx.wp_x.grad)
+        if ctx.wp_v.grad is not None:
+            grad_v = wp.to_torch(ctx.wp_v.grad)
+        if ctx.wp_control_x.grad is not None:
+            grad_control_x = wp.to_torch(ctx.wp_control_x.grad)
+        if ctx.wp_control_v.grad is not None:
+            grad_control_v = wp.to_torch(ctx.wp_control_v.grad)
+        
+        # Return gradients for all inputs (None for non-differentiable inputs)
+        return (
+            grad_x,           # x
+            grad_v,           # v
+            grad_control_x,   # control_x
+            grad_control_v,   # control_v
+            None,            # springs (typically not differentiable)
+            None,            # spring_l0s (typically not differentiable)
+        )
+
+def eval_spring_energies(
+    strain_rate: torch.Tensor,
+    l_m_l0: torch.Tensor,
+    spring_k: torch.Tensor,
+    spring_b: torch.Tensor,
+    num_springs: int
+):
+    epsi_ks = 1e-6
+    epsi_bs = 1e-6
+
+    # expand spring k and b, and apply positivity func
+    spring_ks = torch.broadcast_to(
+        spring_k.view(1, 1, 1),
+        (1, num_springs, 1))
+    positive_fun = torch.nn.ReLU().to("cuda")
+    spring_ks_pos = positive_fun(spring_ks) + epsi_ks
+    spring_bs = torch.broadcast_to(
+        spring_b.view(1, 1, 1),
+        (1, num_springs, 1))
+    spring_bs_pos = positive_fun(spring_bs) + epsi_bs
+
+    e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
+    #total_e_elastic = torch.sum(e_elastic)
+
+    e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
+    e_damping = e_damping.view(1, num_springs, 1)
+    #total_e_damping = torch.sum(e_damping)
+
+    # Save tensors for backward pass
+    # ctx.save_for_backward(strain_rate, l_m_l0, spring_k, spring_b)
+    # ctx.spring_ks_pos = spring_ks_pos
+    # ctx.spring_bs_pos = spring_bs_pos
+    # ctx.num_springs = num_springs
+
+    return e_elastic, e_damping
+
+# class EvalSpringEnergies(torch.autograd.Function):
+#     @staticmethod
+#     def forward(
+#         ctx,
+#         strain_rate: torch.Tensor,
+#         l_m_l0: torch.Tensor,
+#         spring_k: torch.Tensor,
+#         spring_b: torch.Tensor,
+#         num_springs: int):
+
+#         with torch.enable_grad():
+#             epsi_ks = 1e-6
+#             epsi_bs = 1e-6
+
+#             # expand spring k and b, and apply positivity func
+#             spring_ks = torch.broadcast_to(
+#                 spring_k.view(1, 1, 1),
+#                 (1, num_springs, 1))
+#             positive_fun = torch.nn.ReLU().to("cuda")
+#             spring_ks_pos = positive_fun(spring_ks) + epsi_ks
+#             spring_bs = torch.broadcast_to(
+#                 spring_b.view(1, 1, 1),
+#                 (1, num_springs, 1))
+#             spring_bs_pos = positive_fun(spring_bs) + epsi_bs
+
+#             e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
+#             #total_e_elastic = torch.sum(e_elastic)
+
+#             e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
+#             e_damping = e_damping.view(1, num_springs, 1)
+#             #total_e_damping = torch.sum(e_damping)
+
+#             # Save tensors for backward pass
+#             ctx.save_for_backward(strain_rate, l_m_l0, spring_k, spring_b)
+#             ctx.spring_ks_pos = spring_ks_pos
+#             ctx.spring_bs_pos = spring_bs_pos
+#             ctx.num_springs = num_springs
+
+#         return e_elastic, e_damping
+
+#     @staticmethod
+#     def backward(ctx, grad_e_elastic, grad_e_damping):
+#         """
+#         Backward pass for EvalSpringEnergies
+#         """
+#         strain_rate, l_m_l0, spring_k, spring_b = ctx.saved_tensors
+        
+#         grad_strain_rate = torch.autograd.grad(
+            
+#         )
+#         grad_l_m_l0 = None
+#         grad_spring_k = None
+#         grad_spring_b = None
+        
+#         # Gradient w.r.t. l_m_l0 from elastic energy
+#         # e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
+#         # de_elastic/dl_m_l0 = spring_ks_pos * l_m_l0
+#         if grad_e_elastic is not None:
+#             grad_l_m_l0 = grad_e_elastic * ctx.spring_ks_pos * l_m_l0
+            
+#         # Gradient w.r.t. strain_rate from damping energy
+#         # e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
+#         # de_damping/dstrain_rate = spring_bs_pos * strain_rate
+#         if grad_e_damping is not None:
+#             if grad_strain_rate is None:
+#                 grad_strain_rate = grad_e_damping * ctx.spring_bs_pos * strain_rate
+#             else:
+#                 grad_strain_rate += grad_e_damping * ctx.spring_bs_pos * strain_rate
+        
+#         # Gradient w.r.t. spring_k
+#         # spring_ks_pos = ReLU(spring_k) + epsi_ks (broadcasted)
+#         # e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
+#         # de_elastic/dspring_k = 0.5 * (l_m_l0 ** 2) * d(spring_ks_pos)/dspring_k
+#         if grad_e_elastic is not None:
+#             # Gradient of ReLU
+#             relu_grad = (spring_k > 0).float()
+#             # Sum over all springs since spring_k is broadcast
+#             grad_spring_k = torch.sum(grad_e_elastic * 0.5 * (l_m_l0 ** 2) * relu_grad.view(1, ctx.num_springs, 1))
+        
+#         # Gradient w.r.t. spring_b
+#         # spring_bs_pos = ReLU(spring_b) + epsi_bs (broadcasted)  
+#         # e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
+#         # de_damping/dspring_b = 0.5 * (strain_rate ** 2) * d(spring_bs_pos)/dspring_b
+#         if grad_e_damping is not None:
+#             # Gradient of ReLU
+#             relu_grad = (spring_b > 0).float()
+#             # Sum over all springs since spring_b is broadcast
+#             grad_spring_b = torch.sum(grad_e_damping * 0.5 * (strain_rate ** 2) * relu_grad.view(1, ctx.num_springs, 1))
+        
+#         return (
+#             grad_strain_rate,  # strain_rate
+#             grad_l_m_l0,       # l_m_l0
+#             grad_spring_k,     # spring_k
+#             grad_spring_b,     # spring_b
+#             None,             # num_springs
+#         )
+
+
+class MassSpringIntegrator(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
@@ -326,117 +620,72 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
         v: torch.Tensor,
         v_before_collision: torch.Tensor,
         v_before_ground: torch.Tensor,
-        vertice_forces: torch.Tensor,
+        elastic_force: torch.Tensor,
+        damping_force: torch.Tensor,
         num_object_points: int,
-        control_x: torch.Tensor,
+        dt: float,
         wp_masses: wp.array,
         drag_damping: float,
         wp_collide_elas: wp.array,
         wp_collide_fric: wp.array,
         reverse_factor: float,
-        dt: float,
-        num_substeps: int,
-        springs: torch.Tensor,
-        spring_l0s: torch.Tensor,
-        spring_k: float,
-        dashpot_damping: float
-    ):
-        # TODO: enable object collision
-        object_collision_flag = False
-
-        # Compute substep dt
-        substep_dt = dt / num_substeps
-        
-        # Convert initial state to Warp arrays
-        wp_v_before_collision = wp.from_torch(v_before_collision, dtype=wp.vec3, requires_grad=True)
-        wp_v_before_ground = wp.from_torch(v_before_ground, dtype=wp.vec3, requires_grad=True)
-        wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
-        wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
-
-        # Create working copies for substep integration
-        current_x_torch = x.clone().requires_grad_(True)
-        current_v_torch = v.clone().requires_grad_(True)
-        current_x = wp.clone(wp_x)
-        current_v = wp.clone(wp_v)
+        object_collision_flag: bool):
 
         ctx.tape = wp.Tape()
         with ctx.tape:
-            # Run multiple substeps
-            for substep in range(num_substeps):
-                # Recompute forces at current position and velocity
-                current_x_torch = wp.to_torch(current_x).requires_grad_(True)
-                current_v_torch = wp.to_torch(current_v).requires_grad_(True)
-                
-                # Evaluate spring energies at current state
-                elastic_energy, damping_energy = eval_springs_energy(
-                    current_x_torch.unsqueeze(0),
-                    control_x, 
-                    current_v_torch.unsqueeze(0),
-                    springs,
-                    spring_l0s,
-                    springs.shape[0],
-                    spring_k,
-                    dashpot_damping
-                )
-                
-                # Compute forces via autodiff
-                elastic_force = -torch.autograd.grad(
-                    elastic_energy, current_x_torch, create_graph=True, retain_graph=True
-                )[0]
-                damping_force = -torch.autograd.grad(
-                    damping_energy, current_v_torch, create_graph=True, retain_graph=True
-                )[0]
+            # Convert initial state to Warp arrays
+            wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
+            wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
 
-                total_forces = elastic_force + damping_force
-                wp_total_forces = wp.from_torch(total_forces, dtype=wp.vec3)
+            wp_v_before_collision = wp.from_torch(v_before_collision, dtype=wp.vec3, requires_grad=True)
+            wp_v_before_ground = wp.from_torch(v_before_ground, dtype=wp.vec3, requires_grad=True)
 
-                # Determine which velocity array to use based on collision flag
-                if object_collision_flag:
-                    output_v = wp.clone(wp_v_before_collision)
-                else:
-                    output_v = wp.clone(wp_v_before_ground)
+            total_forces = elastic_force + damping_force
+            wp_total_forces = wp.from_torch(total_forces, dtype=wp.vec3)
 
-                # Update velocity using recomputed forces
-                wp.launch(
-                    kernel=update_vel_from_force,
-                    dim=num_object_points,
-                    inputs=[
-                        current_v,
-                        wp_total_forces,
-                        wp_masses,
-                        substep_dt,
-                        drag_damping,
-                        reverse_factor,
-                    ],
-                    outputs=[output_v],
-                )
+            # Determine which velocity array to use based on collision flag
+            if object_collision_flag:
+                output_v = wp.clone(wp_v_before_collision)
+            else:
+                output_v = wp.clone(wp_v_before_ground)
 
-                integration_v = output_v
-                
-                # Integrate position and velocity for this substep
-                next_x = wp.zeros_like(current_x, requires_grad=True)
-                next_v = wp.zeros_like(current_v, requires_grad=True)
-                wp.launch(
-                    kernel=integrate_ground_collision,
-                    dim=num_object_points,
-                    inputs=[
-                        current_x,
-                        integration_v,
-                        wp_collide_elas,
-                        wp_collide_fric,
-                        substep_dt,
-                        reverse_factor,
-                    ],
-                    outputs=[next_x, next_v],
-                )
-                
-                # Update current state for next substep
-                current_x = next_x
-                current_v = next_v
+            # Update velocity using recomputed forces
+            wp.launch(
+                kernel=update_vel_from_force,
+                dim=num_object_points,
+                inputs=[
+                    wp_v,
+                    wp_total_forces,
+                    wp_masses,
+                    dt,
+                    drag_damping,
+                    reverse_factor,
+                ],
+                outputs=[output_v],
+            )
+
+            integration_v = output_v
+            
+            # Integrate position and velocity for this substep
+            next_x = wp.zeros_like(wp_x, requires_grad=True)
+            next_v = wp.zeros_like(wp_v, requires_grad=True)
+            wp.launch(
+                kernel=integrate_ground_collision,
+                dim=num_object_points,
+                inputs=[
+                    wp_x,
+                    integration_v,
+                    wp_collide_elas,
+                    wp_collide_fric,
+                    dt,
+                    reverse_factor,
+                ],
+                outputs=[next_x, next_v],
+            )
 
         # Convert final results back to torch
-        torch_x = wp.to_torch(current_x)
-        torch_v = wp.to_torch(current_v)
+        torch_x = wp.to_torch(next_x)
+        torch_v = wp.to_torch(next_v)
         torch_v_before_collision = wp.to_torch(wp_v_before_collision)
         torch_v_before_ground = wp.to_torch(wp_v_before_ground)
         final_forces = elastic_force + damping_force  # Use the last computed forces
@@ -449,8 +698,8 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
         ctx.wp_v = wp_v
         ctx.wp_v_before_collision = wp_v_before_collision
         ctx.wp_v_before_ground = wp_v_before_ground
-        ctx.final_x = current_x
-        ctx.final_v = current_v
+        ctx.final_x = next_x
+        ctx.final_v = next_v
 
         return torch_x, torch_v, torch_v_before_collision, torch_v_before_ground, final_forces
 
@@ -508,6 +757,86 @@ class MassSpringHybridIntegrator(torch.autograd.Function):
             None,                           # spring_k
             None,                           # dashpot_damping
         )
+
+class MassSpringHybridSimulate():
+    @staticmethod
+    def forward(
+        x: torch.Tensor,
+        v: torch.Tensor,
+        v_before_collision: torch.Tensor,
+        v_before_ground: torch.Tensor,
+        num_object_points: int,
+        control_x: torch.Tensor,
+        control_v: torch.Tensor,
+        wp_masses: wp.array,
+        drag_damping: float,
+        wp_collide_elas: wp.array,
+        wp_collide_fric: wp.array,
+        reverse_factor: float,
+        dt: float,
+        springs: torch.Tensor,
+        spring_l0s: torch.Tensor,
+        spring_k: torch.Tensor,
+        dashpot_damping: float
+    ):
+        # TODO: enable object collision
+        object_collision_flag = False
+        num_springs, _ = springs.shape
+
+        # TODO: this copying is not neccessary.
+
+        # Convert initial state to Warp arrays
+        wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
+        wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
+        # Create working copies for substep integration
+        current_x_torch = x.clone().requires_grad_(True)
+        current_v_torch = v.clone().requires_grad_(True)
+        current_x = wp.clone(wp_x)
+        current_v = wp.clone(wp_v)
+
+        # Recompute forces at current position and velocity
+        current_x_torch = wp.to_torch(current_x).requires_grad_(True)
+        current_v_torch = wp.to_torch(current_v).requires_grad_(True)
+        
+        # Evaluate spring energies at current state
+        strain_rate, l_m_l0 = ComputeStrainRate.apply(
+            current_x_torch,
+            current_v_torch,
+            control_x,
+            control_v,
+            springs,
+            spring_l0s)
+        
+        t_spring_b = torch.tensor([dashpot_damping], device="cuda")
+        elastic_energy, damping_energy = eval_spring_energies(strain_rate, l_m_l0, spring_k, t_spring_b, num_springs)
+
+        # Compute forces via autodiff
+        total_elastic_energy = torch.sum(elastic_energy)
+        total_damping_energy = torch.sum(damping_energy)
+        elastic_force = -torch.autograd.grad(
+            total_elastic_energy, current_x_torch, create_graph=True, retain_graph=True
+        )[0]
+        damping_force = -torch.autograd.grad(
+            total_damping_energy, current_v_torch, create_graph=True, retain_graph=True
+        )[0]
+
+        next_x, next_v, next_v_before_collision, next_v_before_ground, next_forces = MassSpringIntegrator.apply(
+            current_x_torch,
+            current_v_torch,
+            v_before_ground,
+            v_before_collision,
+            elastic_force,
+            damping_force,
+            num_object_points,
+            dt,
+            wp_masses,
+            drag_damping,
+            wp_collide_elas,
+            wp_collide_fric,
+            reverse_factor,
+            object_collision_flag)
+        
+        return next_x, next_v, next_v_before_collision, next_v_before_ground, next_forces
     
 class SpringMassSystemHybrid:
     def __init__(
@@ -582,6 +911,9 @@ class SpringMassSystemHybrid:
         )
         self.controller_points = controller_points
 
+        self.wp_control_x = wp.zeros(self.num_object_points, dtype=wp.vec3, requires_grad=False)
+        self.wp_control_v = wp.zeros_like(self.wp_control_x, requires_grad=False)
+
         # Deal with the any collision detection
         self.object_collision_flag = 0
         if init_masks is not None:
@@ -629,7 +961,7 @@ class SpringMassSystemHybrid:
         # Store spring parameters for hybrid integrator
         self.springs = init_springs
         self.spring_l0s = init_rest_lengths
-        self.spring_k = spring_Y  # Using spring_Y as spring_k
+        self.spring_k = torch.tensor([spring_Y], device="cuda", requires_grad=True)  # Using spring_Y as spring_k
 
         # Store masses and collision parameters
         self.wp_masses = wp.from_torch(
@@ -778,9 +1110,6 @@ class SpringMassSystemHybrid:
             self.num_object_points == wp_x.shape[0]
         )
 
-        # Convert warp arrays to torch tensors
-        self.current_x = wp.to_torch(wp_x).clone().requires_grad_(True)
-        self.current_v = wp.to_torch(wp_v).clone().requires_grad_(True)
         self.current_v_before_collision = self.current_v.clone()
         self.current_v_before_ground = self.current_v.clone()
 
@@ -803,8 +1132,8 @@ class SpringMassSystemHybrid:
                 update_acc,
                 dim=self.num_object_points,
                 inputs=[
-                    wp.from_torch(self.current_v.detach()),
-                    wp.from_torch(self.current_v.detach()),  # Will be updated after step
+                    wp.from_torch(self.current_v.detach(), dtype=wp.vec3),
+                    wp.from_torch(self.current_v.detach(), dtype=wp.vec3),  # Will be updated after step
                 ],
                 outputs=[self.prev_acc],
             )
@@ -828,33 +1157,54 @@ class SpringMassSystemHybrid:
 
     def step(self):
         """Use hybrid integrator to compute next simulation state"""
+        
+        # Compute substep dt
+        substep_dt = self.dt / self.num_substeps
+
         # Use the hybrid integrator
-        (
-            self.current_x,
-            self.current_v,
-            self.current_v_before_collision,
-            self.current_v_before_ground,
-            self.current_forces
-        ) = MassSpringHybridIntegrator.apply(
-            self.current_x,
-            self.current_v,
-            self.current_v_before_collision,
-            self.current_v_before_ground,
-            self.current_forces,
-            self.num_object_points,
-            self.controller_points,
-            self.wp_masses,
-            self.drag_damping,
-            self.wp_collide_elas,
-            self.wp_collide_fric,
-            self.reverse_factor,
-            self.dt,
-            self.num_substeps,
-            self.springs,
-            self.spring_l0s,
-            self.spring_k,
-            self.dashpot_damping
-        )
+        for i in range(self.num_substeps):
+            if not self.controller_points is None:
+                # Set the control point
+                wp.launch(
+                    set_control_points,
+                    dim=self.num_control_points,
+                    inputs=[
+                        self.num_substeps,
+                        self.wp_original_control_point,
+                        self.wp_target_control_point,
+                        i,
+                    ],
+                    outputs=[self.wp_control_x],
+                )
+
+            control_x = wp.to_torch(self.wp_control_x)
+            control_v = wp.to_torch(self.wp_control_v)
+
+            (
+                self.current_x,
+                self.current_v,
+                self.current_v_before_collision,
+                self.current_v_before_ground,
+                self.current_forces
+            ) = MassSpringHybridSimulate.forward(
+                self.current_x,
+                self.current_v,
+                self.current_v_before_collision,
+                self.current_v_before_ground,
+                self.num_object_points,
+                control_x,
+                control_v,
+                self.wp_masses,
+                self.drag_damping,
+                self.wp_collide_elas,
+                self.wp_collide_fric,
+                self.reverse_factor,
+                substep_dt,
+                self.springs,
+                self.spring_l0s,
+                self.spring_k,
+                self.dashpot_damping
+            )
 
     def calculate_loss(self):
         """Use hybrid loss function to compute loss"""
@@ -862,22 +1212,19 @@ class SpringMassSystemHybrid:
             # Get initial velocity for acceleration loss
             v_initial = wp.to_torch(self.wp_init_velocities).requires_grad_(True)
             
-            # Compute acceleration count
-            acc_count_value = float(wp.to_torch(self.acc_count).item())
-            
-            self.current_loss = MassSpringLoss.apply(
+            self.current_loss, self.chamfer_loss, self.track_loss, self.acc_loss = MassSpringLoss.apply(
                 self.current_x,
                 self.current_v,
                 v_initial,
                 self.num_original_points,
                 self.num_object_points,
                 self.num_surface_points,
-                float(self.num_valid_visibilities),
+                self.num_valid_visibilities,
                 cfg.track_weight,
                 cfg.chamfer_weight,
                 cfg.acc_weight,
                 self.prev_acc,
-                acc_count_value,
+                self.acc_count,
                 self.num_valid_motions,
                 self.wp_current_object_points,
                 self.wp_current_object_visibilities,
