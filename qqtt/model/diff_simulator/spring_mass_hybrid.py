@@ -168,19 +168,19 @@ class MassSpringLoss(torch.autograd.Function):
         current_object_motions_valid: wp.array
     ):
         # Initialize loss tensors
-        chamfer_loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
-        track_loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
-        acc_loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
+        chamfer_loss = torch.zeros(1, device=x_curr.device, requires_grad=False)
+        track_loss = torch.zeros(1, device=x_curr.device, requires_grad=False)
+        acc_loss = torch.zeros(1, device=x_curr.device, requires_grad=False)
         loss = torch.zeros(1, device=x_curr.device, requires_grad=True)
 
         wp_x_curr = wp.from_torch(x_curr, dtype=wp.vec3f, requires_grad=True)
         wp_v_curr = wp.from_torch(v_curr, dtype=wp.vec3f, requires_grad=True)
-        wp_v_initial = wp.from_torch(v_initial, dtype=wp.vec3f, requires_grad=True)
+        wp_v_initial = wp.from_torch(v_initial, dtype=wp.vec3f, requires_grad=False)
 
         # Create warp tensors for loss components
-        wp_chamfer_loss = wp.from_torch(chamfer_loss, requires_grad=True)
-        wp_track_loss = wp.from_torch(track_loss, requires_grad=True)
-        wp_acc_loss = wp.from_torch(acc_loss, requires_grad=True)
+        wp_chamfer_loss = wp.from_torch(chamfer_loss, requires_grad=False)
+        wp_track_loss = wp.from_torch(track_loss, requires_grad=False)
+        wp_acc_loss = wp.from_torch(acc_loss, requires_grad=False)
         wp_loss = wp.from_torch(loss, requires_grad=True)
 
         distance_matrix = wp.zeros(
@@ -342,11 +342,11 @@ class ComputeStrainRate(torch.autograd.Function):
             wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
             wp_v = wp.from_torch(dx, dtype=wp.vec3, requires_grad=True)
 
-            wp_control_x = wp.from_torch(control_x, dtype=wp.vec3, requires_grad=True)
-            wp_control_v = wp.from_torch(control_v, dtype=wp.vec3, requires_grad=True)
+            wp_control_x = wp.from_torch(control_x, dtype=wp.vec3, requires_grad=False)
+            wp_control_v = wp.from_torch(control_v, dtype=wp.vec3, requires_grad=False)
 
-            wp_springs = wp.from_torch(springs, dtype=wp.vec2i, requires_grad=True)
-            wp_spring_l0s = wp.from_torch(spring_l0s, requires_grad=True)
+            wp_springs = wp.from_torch(springs, dtype=wp.vec2i, requires_grad=False)
+            wp_spring_l0s = wp.from_torch(spring_l0s, requires_grad=False)
 
             wp_d = wp.zeros(num_springs, dtype=wp.vec3)
             wp_vrel = wp.zeros_like(wp_d)
@@ -406,7 +406,7 @@ class ComputeStrainRate(torch.autograd.Function):
                 1, num_springs, 1)
         
         # Save context for backward pass
-        ctx.save_for_backward(x, dx, control_x, control_v, springs, spring_l0s)
+        #ctx.save_for_backward(x, dx, control_x, control_v, springs, spring_l0s)
         ctx.wp_x = wp_x
         ctx.wp_v = wp_v
         ctx.wp_control_x = wp_control_x
@@ -424,7 +424,7 @@ class ComputeStrainRate(torch.autograd.Function):
         """
         Backward pass for ComputeStrainRate
         """
-        x, v, control_x, control_v, springs, spring_l0s = ctx.saved_tensors
+        #x, v, control_x, control_v, springs, spring_l0s = ctx.saved_tensors
         
         # Set gradients on outputs
         if grad_strain_rate is not None:
@@ -691,7 +691,7 @@ class MassSpringIntegrator(torch.autograd.Function):
         final_forces = elastic_force + damping_force  # Use the last computed forces
 
         # Save for backward pass
-        ctx.save_for_backward(x, v, v_before_collision, v_before_ground)
+        #ctx.save_for_backward(x, v, v_before_collision, v_before_ground)
         
         # Store warp arrays and other info needed for backward
         ctx.wp_x = wp_x
@@ -708,7 +708,7 @@ class MassSpringIntegrator(torch.autograd.Function):
         """
         Fixed backward pass for MassSpringHybridIntegrator
         """
-        x, v, v_before_collision, v_before_ground = ctx.saved_tensors
+        #x, v, v_before_collision, v_before_ground = ctx.saved_tensors
 
         # Set gradients on the final outputs
         if grad_x is not None:
@@ -782,26 +782,11 @@ class MassSpringHybridSimulate():
         # TODO: enable object collision
         object_collision_flag = False
         num_springs, _ = springs.shape
-
-        # TODO: this copying is not neccessary.
-
-        # Convert initial state to Warp arrays
-        wp_x = wp.from_torch(x, dtype=wp.vec3, requires_grad=True)
-        wp_v = wp.from_torch(v, dtype=wp.vec3, requires_grad=True)
-        # Create working copies for substep integration
-        current_x_torch = x.clone().requires_grad_(True)
-        current_v_torch = v.clone().requires_grad_(True)
-        current_x = wp.clone(wp_x)
-        current_v = wp.clone(wp_v)
-
-        # Recompute forces at current position and velocity
-        current_x_torch = wp.to_torch(current_x).requires_grad_(True)
-        current_v_torch = wp.to_torch(current_v).requires_grad_(True)
         
         # Evaluate spring energies at current state
         strain_rate, l_m_l0 = ComputeStrainRate.apply(
-            current_x_torch,
-            current_v_torch,
+            x,
+            v,
             control_x,
             control_v,
             springs,
@@ -814,15 +799,15 @@ class MassSpringHybridSimulate():
         total_elastic_energy = torch.sum(elastic_energy)
         total_damping_energy = torch.sum(damping_energy)
         elastic_force = -torch.autograd.grad(
-            total_elastic_energy, current_x_torch, create_graph=True, retain_graph=True
+            total_elastic_energy, x, create_graph=True, retain_graph=True
         )[0]
         damping_force = -torch.autograd.grad(
-            total_damping_energy, current_v_torch, create_graph=True, retain_graph=True
+            total_damping_energy, v, create_graph=True, retain_graph=True
         )[0]
 
         next_x, next_v, next_v_before_collision, next_v_before_ground, next_forces = MassSpringIntegrator.apply(
-            current_x_torch,
-            current_v_torch,
+            x,
+            v,
             v_before_ground,
             v_before_collision,
             elastic_force,
@@ -1210,7 +1195,7 @@ class SpringMassSystemHybrid:
         """Use hybrid loss function to compute loss"""
         if cfg.data_type == "real":
             # Get initial velocity for acceleration loss
-            v_initial = wp.to_torch(self.wp_init_velocities).requires_grad_(True)
+            v_initial = wp.to_torch(self.wp_init_velocities).requires_grad_(False)
             
             self.current_loss, self.chamfer_loss, self.track_loss, self.acc_loss = MassSpringLoss.apply(
                 self.current_x,
