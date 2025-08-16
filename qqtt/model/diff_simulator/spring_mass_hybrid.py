@@ -1141,12 +1141,17 @@ class SpringMassSystemHybrid:
         )
 
     def step(self):
-        """Use hybrid integrator to compute next simulation state"""
-        
-        # Compute substep dt
-        substep_dt = self.dt / self.num_substeps
+        """Step function with gradient checkpointing"""
+        from torch.utils.checkpoint import checkpoint
 
-        # Use the hybrid integrator
+        self.clear_cache_frequency = 10
+        # TODO: enable object collision
+        object_collision_flag = False
+        num_springs, _ = self.springs.shape
+
+        self.current_x.requires_grad_(True)
+        self.current_v.requires_grad_(True)
+        
         for i in range(self.num_substeps):
             if not self.controller_points is None:
                 # Set the control point
@@ -1165,31 +1170,70 @@ class SpringMassSystemHybrid:
             control_x = wp.to_torch(self.wp_control_x)
             control_v = wp.to_torch(self.wp_control_v)
 
-            (
+            print(self.current_x.requires_grad)
+
+            # Evaluate spring energies at current state
+            strain_rate, l_m_l0 = ComputeStrainRate.apply(
                 self.current_x,
                 self.current_v,
-                self.current_v_before_collision,
-                self.current_v_before_ground,
-                self.current_forces
-            ) = MassSpringHybridSimulate.forward(
-                self.current_x,
-                self.current_v,
-                self.current_v_before_collision,
-                self.current_v_before_ground,
-                self.num_object_points,
                 control_x,
                 control_v,
-                self.wp_masses,
-                self.drag_damping,
-                self.wp_collide_elas,
-                self.wp_collide_fric,
-                self.reverse_factor,
-                substep_dt,
                 self.springs,
-                self.spring_l0s,
-                self.spring_k,
-                self.dashpot_damping
-            )
+                self.spring_l0s)
+            
+            t_spring_b = torch.tensor([self.dashpot_damping], device="cuda")
+            elastic_energy, damping_energy = eval_spring_energies(strain_rate, l_m_l0, self.spring_k, t_spring_b, num_springs)
+
+            # Compute forces via autodiff
+            total_elastic_energy = torch.sum(elastic_energy)
+            total_damping_energy = torch.sum(damping_energy)
+
+            elastic_force = -torch.autograd.grad(
+                total_elastic_energy, self.current_x, create_graph=True, retain_graph=True
+            )[0]
+            damping_force = -torch.autograd.grad(
+                total_damping_energy, self.current_v, create_graph=True, retain_graph=True
+            )[0]
+
+            # Use checkpointing to save memory for substeps
+            def integrator_forward():
+                return MassSpringIntegrator.apply(
+                    self.current_x,
+                    self.current_v,
+                    self.current_v_before_collision,
+                    self.current_v_before_ground,
+                    elastic_force,
+                    damping_force,
+                    self.num_object_points,
+                    self.dt / self.num_substeps,
+                    self.wp_masses,
+                    self.drag_damping,
+                    self.wp_collide_elas,
+                    self.wp_collide_fric,
+                    self.reverse_factor,
+                    object_collision_flag
+                )
+            
+            if i % 2 == 0:  # Use checkpointing every other substep
+                (
+                    self.current_x,
+                    self.current_v,
+                    self.current_v_before_collision,
+                    self.current_v_before_ground,
+                    self.current_forces
+                ) = checkpoint(integrator_forward)
+            else:
+                (
+                    self.current_x,
+                    self.current_v,
+                    self.current_v_before_collision,
+                    self.current_v_before_ground,
+                    self.current_forces
+                ) = integrator_forward()
+            
+            # MEMORY OPTIMIZATION: Periodically clear CUDA cache
+            if i % self.clear_cache_frequency == 0:
+                torch.cuda.empty_cache()
 
     def calculate_loss(self):
         """Use hybrid loss function to compute loss"""
