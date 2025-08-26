@@ -2,6 +2,7 @@ import glob
 import os
 import json
 import argparse
+import subprocess
 
 base_path = "./data/different_types"
 
@@ -38,6 +39,9 @@ else:
 
     train_frame = split["train"][1]
 
-    os.system(
-        f"python train_warp.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame}"
+    # os.system(
+    #     f"python train_warp.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame}"
+    # )
+    subprocess.run(
+        ["python", "train_warp.py", "--base_path", base_path, "--case_name", case_name, "--train_frame", str(train_frame)]
     )

@@ -27,7 +27,7 @@ def visualize_pc(
 
     # Convert the stuffs to numpy if it's tensor
     if isinstance(object_points, torch.Tensor):
-        object_points = object_points.cpu().numpy()
+        object_points = object_points.cpu().detach().numpy()
     if isinstance(object_colors, torch.Tensor):
         object_colors = object_colors.cpu().numpy()
     if isinstance(object_visibilities, torch.Tensor):

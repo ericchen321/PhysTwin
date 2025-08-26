@@ -190,28 +190,28 @@ class MassSpringLoss(torch.autograd.Function):
             (num_original_points), dtype=wp.int32, requires_grad=False
         )
 
+        # Compute the chamfer loss
+        wp.launch(
+            compute_distances,
+            dim=(num_original_points, num_surface_points),
+            inputs=[
+                wp_x_curr,
+                current_object_points,
+                current_object_visibilities,
+            ],
+            outputs=[distance_matrix],
+        )
+
+        wp.launch(
+            compute_neigh_indices,
+            dim=num_original_points,
+            inputs=[distance_matrix],
+            outputs=[neigh_indices],
+        )
+
         # Create tape for gradient computation
         ctx.tape = wp.Tape()
         with ctx.tape:
-            # Compute the chamfer loss
-            wp.launch(
-                compute_distances,
-                dim=(num_original_points, num_surface_points),
-                inputs=[
-                    wp_x_curr,
-                    current_object_points,
-                    current_object_visibilities,
-                ],
-                outputs=[distance_matrix],
-            )
-
-            wp.launch(
-                compute_neigh_indices,
-                dim=num_original_points,
-                inputs=[distance_matrix],
-                outputs=[neigh_indices],
-            )
-
             wp.launch(
                 compute_chamfer_loss,
                 dim=num_original_points,
@@ -322,7 +322,50 @@ class MassSpringLoss(torch.autograd.Function):
             None,             # current_object_motions_valid
         )
 
-class ComputeStrainRate(torch.autograd.Function):
+def compute_strain_rate(
+    d: torch.Tensor,
+    vrel: torch.Tensor,
+    spring_l0s: torch.Tensor,
+    num_springs: int):
+
+    num_samples = 1
+
+    # compute strain
+    with torch.enable_grad():
+        # compute each spring's length
+        spring_l = torch.linalg.vector_norm(
+            d, dim=-1).view(num_samples, num_springs, 1)
+
+        # compute strain
+        l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
+
+        strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
+
+    # compute velocity along spring direction
+    d_unit = d / (torch.linalg.vector_norm(
+        d, dim=-1, keepdim=True) + 1e-6)
+    vrel_proj_speed = torch.sum(
+        vrel * d_unit, dim=-1, keepdim=True).view(
+            1, num_springs, 1)
+    vrel_proj = vrel_proj_speed * d_unit
+    vrel_proj = vrel_proj.view(1, num_springs, 3)
+
+    # compute strain rate as follows: first, compute grad of
+    # of strain wrt relative pos d; then dot product with the
+    # relative velocity along spring direction
+    dstrain_dd = torch.autograd.grad(
+        strain,
+        d,
+        grad_outputs=torch.ones_like(strain),
+        create_graph=True, retain_graph=True)[0]
+    dstrain_dd = dstrain_dd.view(1, num_springs, 3)
+    strain_rate = torch.sum(
+        dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
+            1, num_springs, 1)
+    
+    return strain_rate, l_m_l0
+
+class ComputeLengthVelocityRelative(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
@@ -371,39 +414,6 @@ class ComputeStrainRate(torch.autograd.Function):
 
         d = wp.to_torch(wp_d, requires_grad=True)
         vrel = wp.to_torch(wp_vrel, requires_grad=True)
-
-        # compute strain
-        with torch.enable_grad():
-            # compute each spring's length
-            spring_l = torch.linalg.vector_norm(
-                d, dim=-1).view(num_samples, num_springs, 1)
-
-            # compute elastic energy
-            l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
-
-            strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
-
-        # compute velocity along spring direction
-        d_unit = d / (torch.linalg.vector_norm(
-            d, dim=-1, keepdim=True) + 1e-6)
-        vrel_proj_speed = torch.sum(
-            vrel * d_unit, dim=-1, keepdim=True).view(
-                1, num_springs, 1)
-        vrel_proj = vrel_proj_speed * d_unit
-        vrel_proj = vrel_proj.view(1, num_springs, 3)
-
-        # compute strain rate as follows: first, compute grad of
-        # of strain wrt relative pos d; then dot product with the
-        # relative velocity along spring direction
-        dstrain_dd = torch.autograd.grad(
-            strain,
-            d,
-            grad_outputs=torch.ones_like(strain),
-            create_graph=True, retain_graph=True)[0]
-        dstrain_dd = dstrain_dd.view(1, num_springs, 3)
-        strain_rate = torch.sum(
-            dstrain_dd * vrel_proj, dim=-1, keepdim=True).view(
-                1, num_springs, 1)
         
         # Save context for backward pass
         #ctx.save_for_backward(x, dx, control_x, control_v, springs, spring_l0s)
@@ -417,32 +427,13 @@ class ComputeStrainRate(torch.autograd.Function):
         ctx.wp_vrel = wp_vrel
         ctx.num_particles = num_particles
 
-        return strain_rate, l_m_l0
-
+        return d, vrel
     @staticmethod
-    def backward(ctx, grad_strain_rate, grad_l_m_l0):
+    def backward(ctx, grad_d, grad_vrel):
         """
         Backward pass for ComputeStrainRate
         """
         #x, v, control_x, control_v, springs, spring_l0s = ctx.saved_tensors
-        
-        # Set gradients on outputs
-        if grad_strain_rate is not None:
-            # Since strain_rate computation involves complex operations on d and vrel,
-            # we need to propagate gradients through the warp computation
-            pass
-        
-        if grad_l_m_l0 is not None:
-            # l_m_l0 also depends on d through spring_l calculation
-            pass
-        
-        # For the warp operations, we need to set gradients and run backward
-        # The key insight is that both strain_rate and l_m_l0 depend on wp_d
-        # which comes from the warp kernel computation
-        
-        # Since the torch operations after warp are differentiable,
-        # PyTorch will handle most of the gradient computation.
-        # We mainly need to handle gradients w.r.t. the warp inputs
         
         # Convert gradients and propagate through warp tape
         if ctx.wp_d.grad is None:
@@ -488,9 +479,11 @@ def eval_spring_energies(
     epsi_ks = 1e-6
     epsi_bs = 1e-6
 
+    # NOTE: we aren't clamping the spring stiffness to a min and maximum value like they are
+    #       potentially worth considering if we're not achieving their performance.
     # expand spring k and b, and apply positivity func
-    spring_ks = torch.broadcast_to(
-        spring_k.view(1, 1, 1),
+    spring_ks = torch.reshape(
+        spring_k,
         (1, num_springs, 1))
     positive_fun = torch.nn.ReLU().to("cuda")
     spring_ks_pos = positive_fun(spring_ks) + epsi_ks
@@ -664,7 +657,7 @@ class MassSpringIntegrator(torch.autograd.Function):
                 outputs=[output_v],
             )
 
-            integration_v = output_v
+            wp_v_before_ground = output_v
             
             # Integrate position and velocity for this substep
             next_x = wp.zeros_like(wp_x, requires_grad=True)
@@ -674,7 +667,7 @@ class MassSpringIntegrator(torch.autograd.Function):
                 dim=num_object_points,
                 inputs=[
                     wp_x,
-                    integration_v,
+                    wp_v_before_ground,
                     wp_collide_elas,
                     wp_collide_fric,
                     dt,
@@ -946,8 +939,10 @@ class SpringMassSystemHybrid:
         # Store spring parameters for hybrid integrator
         self.springs = init_springs
         self.spring_l0s = init_rest_lengths
-        self.spring_k = torch.tensor([spring_Y], device="cuda", requires_grad=True)  # Using spring_Y as spring_k
-
+        self.spring_k = torch.nn.Parameter(
+            torch.log(torch.tensor(spring_Y, dtype=torch.float32, device=self.device, requires_grad=True))
+            * torch.ones(self.n_springs, dtype=torch.float32, device=self.device)) # Using spring_Y as spring_k
+        
         # Store masses and collision parameters
         self.wp_masses = wp.from_torch(
             init_masses[:num_object_points], dtype=wp.float32, requires_grad=False
@@ -1142,16 +1137,13 @@ class SpringMassSystemHybrid:
 
     def step(self):
         """Step function with gradient checkpointing"""
-        from torch.utils.checkpoint import checkpoint
+        #from torch.utils.checkpoint import checkpoint
 
         self.clear_cache_frequency = 10
         # TODO: enable object collision
         object_collision_flag = False
         num_springs, _ = self.springs.shape
 
-        self.current_x.requires_grad_(True)
-        self.current_v.requires_grad_(True)
-        
         for i in range(self.num_substeps):
             if not self.controller_points is None:
                 # Set the control point
@@ -1170,10 +1162,8 @@ class SpringMassSystemHybrid:
             control_x = wp.to_torch(self.wp_control_x)
             control_v = wp.to_torch(self.wp_control_v)
 
-            print(self.current_x.requires_grad)
-
             # Evaluate spring energies at current state
-            strain_rate, l_m_l0 = ComputeStrainRate.apply(
+            d, vrel = ComputeLengthVelocityRelative.apply(
                 self.current_x,
                 self.current_v,
                 control_x,
@@ -1181,19 +1171,23 @@ class SpringMassSystemHybrid:
                 self.springs,
                 self.spring_l0s)
             
+            strain_rate, l_m_l0 = compute_strain_rate(d, vrel, self.spring_l0s, num_springs)
+            
             t_spring_b = torch.tensor([self.dashpot_damping], device="cuda")
             elastic_energy, damping_energy = eval_spring_energies(strain_rate, l_m_l0, self.spring_k, t_spring_b, num_springs)
+            print(elastic_energy.sum())
 
             # Compute forces via autodiff
-            total_elastic_energy = torch.sum(elastic_energy)
-            total_damping_energy = torch.sum(damping_energy)
+            # total_elastic_energy = torch.sum(elastic_energy)
+            # total_damping_energy = torch.sum(damping_energy)
 
-            elastic_force = -torch.autograd.grad(
-                total_elastic_energy, self.current_x, create_graph=True, retain_graph=True
-            )[0]
-            damping_force = -torch.autograd.grad(
-                total_damping_energy, self.current_v, create_graph=True, retain_graph=True
-            )[0]
+            with torch.enable_grad():
+                elastic_force = -1.0 * torch.autograd.grad(
+                    elastic_energy, self.current_x, grad_outputs=torch.ones_like(elastic_energy), retain_graph=True, create_graph=True
+                )[0]
+                damping_force = -1.0 * torch.autograd.grad(
+                    damping_energy, self.current_v, grad_outputs=torch.ones_like(damping_energy), retain_graph=True, create_graph=True
+                )[0]
 
             # Use checkpointing to save memory for substeps
             def integrator_forward():
@@ -1214,26 +1208,17 @@ class SpringMassSystemHybrid:
                     object_collision_flag
                 )
             
-            if i % 2 == 0:  # Use checkpointing every other substep
-                (
-                    self.current_x,
-                    self.current_v,
-                    self.current_v_before_collision,
-                    self.current_v_before_ground,
-                    self.current_forces
-                ) = checkpoint(integrator_forward)
-            else:
-                (
-                    self.current_x,
-                    self.current_v,
-                    self.current_v_before_collision,
-                    self.current_v_before_ground,
-                    self.current_forces
-                ) = integrator_forward()
+            (
+                self.current_x,
+                self.current_v,
+                self.current_v_before_collision,
+                self.current_v_before_ground,
+                self.current_forces
+            ) = integrator_forward()
             
-            # MEMORY OPTIMIZATION: Periodically clear CUDA cache
-            if i % self.clear_cache_frequency == 0:
-                torch.cuda.empty_cache()
+            # # MEMORY OPTIMIZATION: Periodically clear CUDA cache
+            # if i % self.clear_cache_frequency == 0:
+            #     torch.cuda.empty_cache()
 
     def calculate_loss(self):
         """Use hybrid loss function to compute loss"""
@@ -1276,7 +1261,7 @@ class SpringMassSystemHybrid:
     # Functions used to load the parameters
     def set_spring_Y(self, spring_Y):
         """Set spring stiffness parameter"""
-        self.spring_k = spring_Y.item() if hasattr(spring_Y, 'item') else float(spring_Y)
+        self.spring_k = spring_Y
 
     def set_collide(self, collide_elas, collide_fric):
         wp.launch(

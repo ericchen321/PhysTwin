@@ -2,6 +2,7 @@ from qqtt.data import RealData, SimpleData
 from qqtt.utils import logger, visualize_pc, cfg
 from qqtt.model.diff_simulator import (
     SpringMassSystemWarp,
+    SpringMassSystemHybrid
 )
 import open3d as o3d
 import numpy as np
@@ -41,7 +42,6 @@ import time
 import threading
 import time
 from datetime import datetime
-
 
 class InvPhyTrainerWarp:
     def __init__(
@@ -121,7 +121,8 @@ class InvPhyTrainerWarp:
             mask=self.init_masks,
         )
 
-        self.simulator = SpringMassSystemWarp(
+        logger.info("Initialize the physical simulator")
+        self.simulator = SpringMassSystemHybrid( #SpringMassSystemWarp(
             self.init_vertices,
             self.init_springs,
             self.init_rest_lengths,
@@ -154,7 +155,7 @@ class InvPhyTrainerWarp:
         if not pure_inference_mode:
             self.optimizer = torch.optim.Adam(
                 [
-                    wp.to_torch(self.simulator.wp_spring_Y),
+                    self.simulator.spring_k, #wp.to_torch(self.simulator.wp_spring_Y),
                     wp.to_torch(self.simulator.wp_collide_elas),
                     wp.to_torch(self.simulator.wp_collide_fric),
                     wp.to_torch(self.simulator.wp_collide_object_elas),
@@ -329,42 +330,42 @@ class InvPhyTrainerWarp:
                         wp.capture_launch(self.simulator.graph)
                     else:
                         if cfg.data_type == "real":
-                            with self.simulator.tape:
-                                self.simulator.step()
-                                self.simulator.calculate_loss()
-                            self.simulator.tape.backward(self.simulator.loss)
+                            #with self.simulator.tape:
+                            self.simulator.step()
+                            self.simulator.calculate_loss()
+                            self.simulator.current_loss.backward()
                         else:
-                            with self.simulator.tape:
-                                self.simulator.step()
-                                self.simulator.calculate_simple_loss()
-                            self.simulator.tape.backward(self.simulator.loss)
+                            #with self.simulator.tape:
+                            self.simulator.step()
+                            self.simulator.calculate_simple_loss()
+                            self.simulator.current_loss.backward()
 
                     self.optimizer.step()
 
                     if cfg.data_type == "real":
-                        chamfer_loss = wp.to_torch(
-                            self.simulator.chamfer_loss, requires_grad=False
-                        )
-                        track_loss = wp.to_torch(
-                            self.simulator.track_loss, requires_grad=False
-                        )
-                        total_chamfer_loss += chamfer_loss.item()
-                        total_track_loss += track_loss.item()
+                        #chamfer_loss = wp.to_torch(
+                        #    self.simulator.chamfer_loss, requires_grad=False
+                        #)
+                        #track_loss = wp.to_torch(
+                        #    self.simulator.track_loss, requires_grad=False
+                        #)
+                        total_chamfer_loss += self.simulator.chamfer_loss.item()
+                        total_track_loss += self.simulator.track_loss.item()
 
-                    loss = wp.to_torch(self.simulator.loss, requires_grad=False)
-                    total_loss += loss.item()
+                    #loss = wp.to_torch(self.simulator.current_loss, requires_grad=False)
+                    total_loss += self.simulator.current_loss.item()
 
-                    if cfg.use_graph:
-                        # Only need to clear the gradient, the tape is created in the graph
-                        self.simulator.tape.zero()
-                    else:
-                        # Need to reset the compute graph and clear the gradient
-                        self.simulator.tape.reset()
+                    # if cfg.use_graph:
+                    #     # Only need to clear the gradient, the tape is created in the graph
+                    #     #self.simulator.tape.zero()
+                    # else:
+                    #     # Need to reset the compute graph and clear the gradient
+                    #     #self.simulator.tape.reset()
                     self.simulator.clear_loss()
                     # Set the intial state for the next step
                     self.simulator.set_init_state(
-                        self.simulator.wp_states[-1].wp_x,
-                        self.simulator.wp_states[-1].wp_v,
+                        self.simulator.current_x,
+                        self.simulator.current_v,
                     )
 
             total_loss /= cfg.train_frame - 1
@@ -372,10 +373,10 @@ class InvPhyTrainerWarp:
                 total_chamfer_loss /= cfg.train_frame - 1
                 total_track_loss /= cfg.train_frame - 1
 
-            spring_Y_hist_np = np.histogram(self.simulator.wp_spring_Y.numpy())
+            spring_Y_hist_np = np.histogram(self.simulator.spring_k.cpu().detach().numpy())
             spring_Y_hist = wandb.Histogram(np_histogram=spring_Y_hist_np)
 
-            spring_Y_exp_np = np.histogram(np.exp(self.simulator.wp_spring_Y.numpy()))
+            spring_Y_exp_np = np.histogram(np.exp(self.simulator.spring_k.cpu().detach().numpy()))
             spring_Y_exp_hist = wandb.Histogram(np_histogram=spring_Y_exp_np)
             wandb.log(
                 {
@@ -421,9 +422,7 @@ class InvPhyTrainerWarp:
                 cur_model = {
                     "epoch": i,
                     "num_object_springs": self.num_object_springs,
-                    "spring_Y": torch.exp(
-                        wp.to_torch(self.simulator.wp_spring_Y, requires_grad=False)
-                    ),
+                    "spring_Y": self.simulator.spring_k,
                     "collide_elas": wp.to_torch(
                         self.simulator.wp_collide_elas, requires_grad=False
                     ),
@@ -511,7 +510,7 @@ class InvPhyTrainerWarp:
             self.simulator.wp_init_vertices, self.simulator.wp_init_velocities
         )
         vertices = [
-            wp.to_torch(self.simulator.wp_states[0].wp_x, requires_grad=False).cpu()
+            self.simulator.current_x.cpu()
         ]
 
         with wp.ScopedTimer("simulate"):
@@ -525,12 +524,12 @@ class InvPhyTrainerWarp:
                     wp.capture_launch(self.simulator.forward_graph)
                 else:
                     self.simulator.step()
-                x = wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
+                x = self.simulator.current_x.clone().detach() #wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
                 vertices.append(x.cpu())
                 # Set the intial state for the next step
                 self.simulator.set_init_state(
-                    self.simulator.wp_states[-1].wp_x,
-                    self.simulator.wp_states[-1].wp_v,
+                    self.simulator.current_x,
+                    self.simulator.current_v,
                 )
 
         vertices = torch.stack(vertices, dim=0)
