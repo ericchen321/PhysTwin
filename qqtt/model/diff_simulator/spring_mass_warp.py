@@ -78,6 +78,14 @@ def set_control_points(
         + (target_control_point[tid] - original_control_point[tid]) * t
     )
 
+@wp.kernel
+def compute_total_force(
+    f_e: wp.array(dtype=wp.vec3),
+    f_d: wp.array(dtype=wp.vec3),
+    f_t: wp.array(dtype=wp.vec3)
+):
+    tid = wp.tid()
+    f_t[tid] = (-1.0 * f_e[tid]) + (-1.0 * f_d[tid])
 
 @wp.kernel
 def eval_springs(
@@ -1014,16 +1022,26 @@ class SpringMassSystemWarp:
                     outputs=[elastic_energies, damping_energies],
                 )
 
-            #tape.backward(elastic_energies)
-            f_elastic = wp.zeros_like(self.wp_states[i].wp_x) #-1.0 * tape.gradients[self.wp_states[i].wp_x]
-            #tape.zero()
+            tape.backward(elastic_energies)
+            f_elastic = tape.gradients[self.wp_states[i].wp_x]
+            tape.zero()
 
-            #tape.backward(damping_energies)
-            f_damping = wp.zeros_like(self.wp_states[i].wp_x) #-1.0 * tape.gradients[self.wp_states[i].wp_x]
+            tape.backward(damping_energies)
+            f_damping = tape.gradients[self.wp_states[i].wp_x]
+
+            wp.launch(
+                kernel=compute_total_force,
+                dim=self.num_object_points,
+                inputs=[
+                    f_elastic,
+                    f_damping,
+                ],
+                outputs=[self.wp_states[i].wp_vertice_forces],
+            )
 
 
             # TODO: include rayleigh force
-            self.wp_states[i].wp_vertice_forces = f_elastic + f_damping
+            # self.wp_states[i].wp_vertice_forces = f_elastic + f_damping
 
             if self.object_collision_flag:
                 output_v = self.wp_states[i].wp_v_before_collision
