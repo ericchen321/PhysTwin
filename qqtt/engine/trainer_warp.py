@@ -1035,19 +1035,19 @@ class InvPhyTrainerWarp:
         self.inv_ctrl = -1.0 if inv_ctrl else 1.0
         self.key_mappings = {
             # Set 1 controls
-            "w": (0, np.array([0.005, 0, 0]) * self.inv_ctrl),
-            "s": (0, np.array([-0.005, 0, 0]) * self.inv_ctrl),
-            "a": (0, np.array([0, -0.005, 0]) * self.inv_ctrl),
-            "d": (0, np.array([0, 0.005, 0]) * self.inv_ctrl),
-            "e": (0, np.array([0, 0, 0.005])),
-            "q": (0, np.array([0, 0, -0.005])),
+            "w": (0, np.array([0.05, 0, 0]) * self.inv_ctrl),
+            "s": (0, np.array([-0.05, 0, 0]) * self.inv_ctrl),
+            "a": (0, np.array([0, -0.05, 0]) * self.inv_ctrl),
+            "d": (0, np.array([0, 0.05, 0]) * self.inv_ctrl),
+            "e": (0, np.array([0, 0, 0.05])),
+            "q": (0, np.array([0, 0, -0.05])),
             # Set 2 controls
-            "i": (1, np.array([0.005, 0, 0]) * self.inv_ctrl),
-            "k": (1, np.array([-0.005, 0, 0]) * self.inv_ctrl),
-            "j": (1, np.array([0, -0.005, 0]) * self.inv_ctrl),
-            "l": (1, np.array([0, 0.005, 0]) * self.inv_ctrl),
-            "o": (1, np.array([0, 0, 0.005])),
-            "u": (1, np.array([0, 0, -0.005])),
+            "i": (1, np.array([0.05, 0, 0]) * self.inv_ctrl),
+            "k": (1, np.array([-0.05, 0, 0]) * self.inv_ctrl),
+            "j": (1, np.array([0, -0.05, 0]) * self.inv_ctrl),
+            "l": (1, np.array([0, 0.05, 0]) * self.inv_ctrl),
+            "o": (1, np.array([0, 0, 0.05])),
+            "u": (1, np.array([0, 0, -0.05])),
         }
         self.pressed_keys = set()
         self.w2c = w2c
