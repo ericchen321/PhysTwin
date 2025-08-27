@@ -1,9 +1,11 @@
 test.py
 wandb/
 experiments/
+experiments
 past_exps/
 *.npy
 data/
+data
 .DS_Store
 outcmaes/
 data_collect*
@@ -28,6 +30,7 @@ data_process/TRELLIS
 quick_test/
 non_rigid_matching/
 experiments_optimization*/
+experiments_optimization
 quick*
 visualization
 experiments_transfer/
@@ -37,6 +40,7 @@ gnn_test/
 exp_results/
 temp_experiments/
 gaussian_output/
+gaussian_output
 gaussian_output_video/
 gaussian_output_dynamic*
 interactive_my_test.py
