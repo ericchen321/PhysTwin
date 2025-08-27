@@ -331,15 +331,13 @@ def compute_strain_rate(
     num_samples = 1
 
     # compute strain
-    with torch.enable_grad():
-        # compute each spring's length
-        spring_l = torch.linalg.vector_norm(
-            d, dim=-1).view(num_samples, num_springs, 1)
+    spring_l = torch.linalg.vector_norm(
+        d, dim=-1).view(num_samples, num_springs, 1)
 
-        # compute strain
-        l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
+    # compute strain
+    l_m_l0 = spring_l - spring_l0s.view(1, num_springs, 1)
 
-        strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
+    strain = l_m_l0 / (spring_l0s.view(1, num_springs, 1) + 1e-6)
 
     # compute velocity along spring direction
     d_unit = d / (torch.linalg.vector_norm(
@@ -434,6 +432,10 @@ class ComputeLengthVelocityRelative(torch.autograd.Function):
         Backward pass for ComputeStrainRate
         """
         #x, v, control_x, control_v, springs, spring_l0s = ctx.saved_tensors
+        if (grad_d is not None):
+            ctx.wp_d.grad = wp.from_torch(grad_d, dtype=wp.vec3)
+        if (grad_vrel is not None):
+            ctx.wp_vrel.grad = wp.from_torch(grad_vrel, dtype=wp.vec3)
         
         # Convert gradients and propagate through warp tape
         if ctx.wp_d.grad is None:
@@ -506,104 +508,6 @@ def eval_spring_energies(
     # ctx.num_springs = num_springs
 
     return e_elastic, e_damping
-
-# class EvalSpringEnergies(torch.autograd.Function):
-#     @staticmethod
-#     def forward(
-#         ctx,
-#         strain_rate: torch.Tensor,
-#         l_m_l0: torch.Tensor,
-#         spring_k: torch.Tensor,
-#         spring_b: torch.Tensor,
-#         num_springs: int):
-
-#         with torch.enable_grad():
-#             epsi_ks = 1e-6
-#             epsi_bs = 1e-6
-
-#             # expand spring k and b, and apply positivity func
-#             spring_ks = torch.broadcast_to(
-#                 spring_k.view(1, 1, 1),
-#                 (1, num_springs, 1))
-#             positive_fun = torch.nn.ReLU().to("cuda")
-#             spring_ks_pos = positive_fun(spring_ks) + epsi_ks
-#             spring_bs = torch.broadcast_to(
-#                 spring_b.view(1, 1, 1),
-#                 (1, num_springs, 1))
-#             spring_bs_pos = positive_fun(spring_bs) + epsi_bs
-
-#             e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
-#             #total_e_elastic = torch.sum(e_elastic)
-
-#             e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
-#             e_damping = e_damping.view(1, num_springs, 1)
-#             #total_e_damping = torch.sum(e_damping)
-
-#             # Save tensors for backward pass
-#             ctx.save_for_backward(strain_rate, l_m_l0, spring_k, spring_b)
-#             ctx.spring_ks_pos = spring_ks_pos
-#             ctx.spring_bs_pos = spring_bs_pos
-#             ctx.num_springs = num_springs
-
-#         return e_elastic, e_damping
-
-#     @staticmethod
-#     def backward(ctx, grad_e_elastic, grad_e_damping):
-#         """
-#         Backward pass for EvalSpringEnergies
-#         """
-#         strain_rate, l_m_l0, spring_k, spring_b = ctx.saved_tensors
-        
-#         grad_strain_rate = torch.autograd.grad(
-            
-#         )
-#         grad_l_m_l0 = None
-#         grad_spring_k = None
-#         grad_spring_b = None
-        
-#         # Gradient w.r.t. l_m_l0 from elastic energy
-#         # e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
-#         # de_elastic/dl_m_l0 = spring_ks_pos * l_m_l0
-#         if grad_e_elastic is not None:
-#             grad_l_m_l0 = grad_e_elastic * ctx.spring_ks_pos * l_m_l0
-            
-#         # Gradient w.r.t. strain_rate from damping energy
-#         # e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
-#         # de_damping/dstrain_rate = spring_bs_pos * strain_rate
-#         if grad_e_damping is not None:
-#             if grad_strain_rate is None:
-#                 grad_strain_rate = grad_e_damping * ctx.spring_bs_pos * strain_rate
-#             else:
-#                 grad_strain_rate += grad_e_damping * ctx.spring_bs_pos * strain_rate
-        
-#         # Gradient w.r.t. spring_k
-#         # spring_ks_pos = ReLU(spring_k) + epsi_ks (broadcasted)
-#         # e_elastic = 0.5 * spring_ks_pos * (l_m_l0 ** 2)
-#         # de_elastic/dspring_k = 0.5 * (l_m_l0 ** 2) * d(spring_ks_pos)/dspring_k
-#         if grad_e_elastic is not None:
-#             # Gradient of ReLU
-#             relu_grad = (spring_k > 0).float()
-#             # Sum over all springs since spring_k is broadcast
-#             grad_spring_k = torch.sum(grad_e_elastic * 0.5 * (l_m_l0 ** 2) * relu_grad.view(1, ctx.num_springs, 1))
-        
-#         # Gradient w.r.t. spring_b
-#         # spring_bs_pos = ReLU(spring_b) + epsi_bs (broadcasted)  
-#         # e_damping = 0.5 * spring_bs_pos * (strain_rate ** 2)
-#         # de_damping/dspring_b = 0.5 * (strain_rate ** 2) * d(spring_bs_pos)/dspring_b
-#         if grad_e_damping is not None:
-#             # Gradient of ReLU
-#             relu_grad = (spring_b > 0).float()
-#             # Sum over all springs since spring_b is broadcast
-#             grad_spring_b = torch.sum(grad_e_damping * 0.5 * (strain_rate ** 2) * relu_grad.view(1, ctx.num_springs, 1))
-        
-#         return (
-#             grad_strain_rate,  # strain_rate
-#             grad_l_m_l0,       # l_m_l0
-#             grad_spring_k,     # spring_k
-#             grad_spring_b,     # spring_b
-#             None,             # num_springs
-#         )
-
 
 class MassSpringIntegrator(torch.autograd.Function):
     @staticmethod
@@ -750,71 +654,6 @@ class MassSpringIntegrator(torch.autograd.Function):
             None,                           # spring_k
             None,                           # dashpot_damping
         )
-
-class MassSpringHybridSimulate():
-    @staticmethod
-    def forward(
-        x: torch.Tensor,
-        v: torch.Tensor,
-        v_before_collision: torch.Tensor,
-        v_before_ground: torch.Tensor,
-        num_object_points: int,
-        control_x: torch.Tensor,
-        control_v: torch.Tensor,
-        wp_masses: wp.array,
-        drag_damping: float,
-        wp_collide_elas: wp.array,
-        wp_collide_fric: wp.array,
-        reverse_factor: float,
-        dt: float,
-        springs: torch.Tensor,
-        spring_l0s: torch.Tensor,
-        spring_k: torch.Tensor,
-        dashpot_damping: float
-    ):
-        # TODO: enable object collision
-        object_collision_flag = False
-        num_springs, _ = springs.shape
-        
-        # Evaluate spring energies at current state
-        strain_rate, l_m_l0 = ComputeStrainRate.apply(
-            x,
-            v,
-            control_x,
-            control_v,
-            springs,
-            spring_l0s)
-        
-        t_spring_b = torch.tensor([dashpot_damping], device="cuda")
-        elastic_energy, damping_energy = eval_spring_energies(strain_rate, l_m_l0, spring_k, t_spring_b, num_springs)
-
-        # Compute forces via autodiff
-        total_elastic_energy = torch.sum(elastic_energy)
-        total_damping_energy = torch.sum(damping_energy)
-        elastic_force = -torch.autograd.grad(
-            total_elastic_energy, x, create_graph=True, retain_graph=True
-        )[0]
-        damping_force = -torch.autograd.grad(
-            total_damping_energy, v, create_graph=True, retain_graph=True
-        )[0]
-
-        next_x, next_v, next_v_before_collision, next_v_before_ground, next_forces = MassSpringIntegrator.apply(
-            x,
-            v,
-            v_before_ground,
-            v_before_collision,
-            elastic_force,
-            damping_force,
-            num_object_points,
-            dt,
-            wp_masses,
-            drag_damping,
-            wp_collide_elas,
-            wp_collide_fric,
-            reverse_factor,
-            object_collision_flag)
-        
-        return next_x, next_v, next_v_before_collision, next_v_before_ground, next_forces
     
 class SpringMassSystemHybrid:
     def __init__(
@@ -1002,6 +841,8 @@ class SpringMassSystemHybrid:
         # Current state for step and loss computation
         self.current_x = None
         self.current_v = None
+        self.next_x = None
+        self.next_v = None
         self.current_v_before_collision = None
         self.current_v_before_ground = None
         self.current_forces = None
@@ -1175,19 +1016,22 @@ class SpringMassSystemHybrid:
             
             t_spring_b = torch.tensor([self.dashpot_damping], device="cuda")
             elastic_energy, damping_energy = eval_spring_energies(strain_rate, l_m_l0, self.spring_k, t_spring_b, num_springs)
-            print(elastic_energy.sum())
+            
+            # Test if calling backward here fills current_x.grad (is the graph connected?)
+            #elastic_energy.backward()
 
             # Compute forces via autodiff
-            # total_elastic_energy = torch.sum(elastic_energy)
+            total_elastic_energy = torch.sum(elastic_energy)
+            #total_elastic_energy.backward(retain_graph=True)
+            
             # total_damping_energy = torch.sum(damping_energy)
 
-            with torch.enable_grad():
-                elastic_force = -1.0 * torch.autograd.grad(
-                    elastic_energy, self.current_x, grad_outputs=torch.ones_like(elastic_energy), retain_graph=True, create_graph=True
-                )[0]
-                damping_force = -1.0 * torch.autograd.grad(
-                    damping_energy, self.current_v, grad_outputs=torch.ones_like(damping_energy), retain_graph=True, create_graph=True
-                )[0]
+            elastic_force = -1.0 * torch.autograd.grad(
+                elastic_energy, self.current_x, grad_outputs=torch.ones_like(elastic_energy), retain_graph=True, create_graph=True
+            )[0]
+            damping_force = -1.0 * torch.autograd.grad(
+                damping_energy, self.current_v, grad_outputs=torch.ones_like(damping_energy), retain_graph=True, create_graph=True
+            )[0]
 
             # Use checkpointing to save memory for substeps
             def integrator_forward():
@@ -1209,8 +1053,8 @@ class SpringMassSystemHybrid:
                 )
             
             (
-                self.current_x,
-                self.current_v,
+                self.next_x,
+                self.next_v,
                 self.current_v_before_collision,
                 self.current_v_before_ground,
                 self.current_forces

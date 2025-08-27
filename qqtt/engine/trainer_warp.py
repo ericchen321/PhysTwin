@@ -364,8 +364,8 @@ class InvPhyTrainerWarp:
                     self.simulator.clear_loss()
                     # Set the intial state for the next step
                     self.simulator.set_init_state(
-                        self.simulator.current_x,
-                        self.simulator.current_v,
+                        self.simulator.next_x,
+                        self.simulator.next_v,
                     )
 
             total_loss /= cfg.train_frame - 1
@@ -524,12 +524,12 @@ class InvPhyTrainerWarp:
                     wp.capture_launch(self.simulator.forward_graph)
                 else:
                     self.simulator.step()
-                x = self.simulator.current_x.clone().detach() #wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
+                x = self.simulator.next_x.clone().detach() #wp.to_torch(self.simulator.wp_states[-1].wp_x, requires_grad=False)
                 vertices.append(x.cpu())
                 # Set the intial state for the next step
                 self.simulator.set_init_state(
-                    self.simulator.current_x,
-                    self.simulator.current_v,
+                    self.simulator.next_x,
+                    self.simulator.next_v,
                 )
 
         vertices = torch.stack(vertices, dim=0)
