@@ -3,6 +3,7 @@ import os
 import json
 
 import argparse
+import subprocess
 
 base_path = "./data/different_types"
 dir_names = glob.glob(f"{base_path}/*")
@@ -31,9 +32,8 @@ if (case_name == "all"):
 
         train_frame = split["train"][1]
 
-        os.system(
-            f"python optimize_cma.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame}"
-        )
+    subprocess.run(["python", "optimize_cma.py", "--base_path", base_path, "--case_name", case_name, "--train_frame", str(train_frame), "--max_iter", str(max_iter)])
+
 else:
     # Read the train test split
     with open(f"{base_path}/{case_name}/split.json", "r") as f:
@@ -41,6 +41,4 @@ else:
 
     train_frame = split["train"][1]
 
-    os.system(
-        f"python optimize_cma.py --base_path {base_path} --case_name {case_name} --train_frame {train_frame} --max_iter {max_iter}"
-    )
+    subprocess.run(["python", "optimize_cma.py", "--base_path", base_path, "--case_name", case_name, "--train_frame", str(train_frame), "--max_iter", str(max_iter)])

@@ -356,11 +356,17 @@ class InvPhyTrainerWarp:
 
                     if cfg.use_graph:
                         # Only need to clear the gradient, the tape is created in the graph
-                        self.simulator.tape.zero()
+                        #self.simulator.tape.zero()
+                        for substep_tape in self.simulator.tapes:
+                            for tape in substep_tape:
+                                tape.zero()
+                        self.simulator.loss_tape.zero()
                     else:
+                        # TODO: need to properly reset tapes for when not using graph
                         # Need to reset the compute graph and clear the gradient
                         self.simulator.tape.reset()
                     self.simulator.clear_loss()
+
                     # Set the intial state for the next step
                     self.simulator.set_init_state(
                         self.simulator.wp_states[-1].wp_x,
