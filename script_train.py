@@ -30,7 +30,7 @@ if (case_name == "all"):
         train_frame = split["train"][1]
 
         subprocess.run([
-            "python", "optimize_cma.py",
+            "python", "train_warp.py",
             "--base_path", base_path,
             "--case_name", case_name,
             "--train_frame", str(train_frame)
@@ -47,7 +47,7 @@ else:
     train_frame = split["train"][1]
 
     subprocess.run([
-        "python", "optimize_cma.py",
+        "python", "train_warp.py",
         "--base_path", base_path,
         "--case_name", case_name,
         "--train_frame", str(train_frame)

@@ -329,15 +329,17 @@ class InvPhyTrainerWarp:
                         wp.capture_launch(self.simulator.graph)
                     else:
                         if cfg.data_type == "real":
-                            with self.simulator.tape:
-                                self.simulator.step()
+                            #with self.simulator.tape:
+                            self.simulator.step()
+                            with self.simulator.loss_tape:
                                 self.simulator.calculate_loss()
-                            self.simulator.tape.backward(self.simulator.loss)
+                            self.simulator.backward(self.simulator.loss)
                         else:
-                            with self.simulator.tape:
-                                self.simulator.step()
+                            #with self.simulator.tape:
+                            self.simulator.step()
+                            with self.simulator.loss_tape:
                                 self.simulator.calculate_simple_loss()
-                            self.simulator.tape.backward(self.simulator.loss)
+                            self.simulator.backward(self.simulator.loss)
 
                     self.optimizer.step()
 

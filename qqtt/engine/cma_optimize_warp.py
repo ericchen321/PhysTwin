@@ -423,8 +423,9 @@ class OptimizerCMA:
                 wp.capture_launch(self.simulator.graph)
             else:
                 if cfg.data_type == "real":
-                    with self.simulator.tape:
-                        self.simulator.step()
+                    #with self.simulator.tape:
+                    self.simulator.step()
+                    with self.simulator.loss_tape:
                         self.simulator.calculate_loss()
                 else:
                     with self.simulator.tape:

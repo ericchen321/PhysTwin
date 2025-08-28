@@ -80,12 +80,15 @@ def set_control_points(
 
 @wp.kernel
 def compute_total_force(
-    f_e: wp.array(dtype=wp.vec3),
-    f_d: wp.array(dtype=wp.vec3),
-    f_t: wp.array(dtype=wp.vec3)
+    elastic_force: wp.array(dtype=wp.vec3),
+    damping_force: wp.array(dtype=wp.vec3),
+    total_force: wp.array(dtype=wp.vec3)
 ):
     tid = wp.tid()
-    f_t[tid] = (-1.0 * f_e[tid]) + (-1.0 * f_d[tid])
+    f_e = -1.0 * elastic_force[tid]
+    f_d = -1.0 * damping_force[tid]
+
+    wp.atomic_add(total_force, tid, f_e + f_d)
 
 @wp.kernel
 def eval_springs_force(
@@ -182,28 +185,41 @@ def eval_springs_energy(
             v2 = v[p1_idx]
 
         d = x2 - x1
-        spring_length = wp.length(d)
+        d_norm = wp.length(d)
+        if d_norm < 1e-6:
+            spring_length = 0.0
+            d_unit = wp.vec(0.0, 0.0, 0.0)
+        else:
+            spring_length = d_norm
+            d_unit = d / d_norm
 
         rest = rest_lengths[spring_idx]
-        y = spring_Y[spring_idx]
+        rest = wp.max(rest, 1e-6)
+
+        y = wp.clamp(wp.exp(spring_Y[spring_idx]), low=spring_Y_min, high=spring_Y_max)
 
         # compute elastic energy
-        delta_length = spring_length - rest
+        delta_length = wp.clamp(spring_length - rest, low=-2.0, high=2.0)
         elastic_energy = 0.5 * y * delta_length * delta_length
 
         # strain = delta_length / (rest + 1e-6)
 
-        d_unit = wp.normalize(d + wp.vec(1e-6, 1e-6, 1e-6))
+        if d_norm < 1e-6:
+            d_unit = wp.vec(0.0, 0.0, 0.0)
+        else:
+            d_unit = d / d_norm
+
         vrel = v2 - v1
 
-        vrel_proj_speed = wp.dot(vrel, d_unit)
+        MAX_SPEED = 2.0
+        vrel_proj_speed = wp.clamp(wp.dot(vrel, d_unit), low=-MAX_SPEED, high=MAX_SPEED)
         vrel_proj = vrel_proj_speed * d_unit
 
         # TODO: compute dstrain
         # strain = (||x2 - x1|| - rest) / (rest) = ||x2-x1||/rest - 1 = x2-x1/(spring_length*rest)
 
-        dstrain_dd = d / (spring_length * rest)
-        strain_rate = wp.dot(dstrain_dd, vrel_proj)
+        dstrain_dd = d / (spring_length * rest + 1e-6)
+        strain_rate = wp.clamp(wp.dot(dstrain_dd, vrel_proj), low=-1.0, high=1.0)
 
         damping_energy = 0.5 * dashpot_damping * strain_rate * strain_rate
 
@@ -902,6 +918,7 @@ class SpringMassSystemWarp:
             self.forward_graph = forward_capture.graph
         else:
             self.tape = wp.Tape()
+            self.loss_tape = wp.Tape()
 
     def set_controller_target(self, frame_idx, pure_inference=False):
         if self.controller_points is not None:
@@ -1061,41 +1078,41 @@ class SpringMassSystemWarp:
             # elastic_energies = wp.zeros(1, dtype=float, requires_grad=True)
             # damping_energies = wp.zeros(1, dtype=float, requires_grad=True)
 
-            # # Calculate the spring elastic & damping forces
-            # input_buffer = [
-            #     self.wp_states[i].wp_x,
-            #     self.wp_states[i].wp_v,
-            #     self.wp_states[i].wp_control_x,
-            #     self.wp_states[i].wp_control_v,
-            #     self.num_object_points,
-            #     self.wp_springs,
-            #     self.wp_rest_lengths,
-            #     self.wp_spring_Y,
-            #     self.dashpot_damping,
-            #     self.spring_Y_min,
-            #     self.spring_Y_max,
-            # ]
+            # t_elastic_energies = wp.to_torch(wp.clone(elastic_energies, requires_grad=False))
+            # t_damping_energies = wp.to_torch(wp.clone(damping_energies, requires_grad=False))
+            # if i == self.num_substeps - 1:
+            #     logger.info(
+            #         f"[SIMULATION]: Substep {i}, Elastic Energy: {t_elastic_energies.item():.6f}, Damping Energy: {t_damping_energies.item():.6f}"
+            #     )
+
+            # Calculate the spring elastic & damping forces
+            input_buffer = [
+                self.wp_states[i].wp_x,
+                self.wp_states[i].wp_v,
+                self.wp_states[i].wp_control_x,
+                self.wp_states[i].wp_control_v,
+                self.num_object_points,
+                self.wp_springs,
+                self.wp_rest_lengths,
+                self.wp_spring_Y,
+                self.dashpot_damping,
+                self.spring_Y_min,
+                self.spring_Y_max,
+            ]
 
             wp.launch(
                 kernel=eval_springs_force,
                 dim=self.n_springs,
-                inputs=[
-                    self.wp_states[i].wp_x,
-                    self.wp_states[i].wp_v,
-                    self.wp_states[i].wp_control_x,
-                    self.wp_states[i].wp_control_v,
-                    self.num_object_points,
-                    self.wp_springs,
-                    self.wp_rest_lengths,
-                    self.wp_spring_Y,
-                    self.dashpot_damping,
-                    self.spring_Y_min,
-                    self.spring_Y_max,
-                ],
+                inputs=input_buffer,
                 outputs=[self.wp_states[i].wp_vertice_forces],
             )
 
-
+        # t_elastic_energies = wp.to_torch(wp.clone(elastic_energies, requires_grad=False))
+        # t_damping_energies = wp.to_torch(wp.clone(damping_energies, requires_grad=False))
+        # if i == self.num_substeps - 1:
+        #     logger.info(
+        #         f"[SIMULATION]: Substep {i}, Elastic Energy: {t_elastic_energies.item():.6f}, Damping Energy: {t_damping_energies.item():.6f}"
+        #     )
 
         # with wp.Tape() as tape_grad_energies:
         #     tape_energies.backward(elastic_energies)
@@ -1104,6 +1121,13 @@ class SpringMassSystemWarp:
 
         #     tape_energies.backward(damping_energies)
         #     f_damping = tape_energies.gradients[self.wp_states[i].wp_x]
+
+        # t_force_elastic = wp.to_torch(wp.clone(f_elastic))
+        # t_force_damping = wp.to_torch(wp.clone(f_damping))
+        # if i == self.num_substeps - 1:
+        #     logger.info(
+        #         f"[SIMULATION]: Substep {i}, Max Elastic Force: {t_force_elastic.abs().max().item():.6f}, Max Damping Force: {t_force_damping.abs().max().item():.6f}"
+        #     )
 
         with wp.Tape() as tape_post_energies:
             # wp.launch(
@@ -1115,6 +1139,14 @@ class SpringMassSystemWarp:
             #     ],
             #     outputs=[self.wp_states[i].wp_vertice_forces],
             # )
+
+            # t_total_force = wp.to_torch(
+            #     wp.clone(self.wp_states[i].wp_vertice_forces)
+            # )
+            # if i == self.num_substeps - 1:
+            #     logger.info(
+            #         f"[SIMULATION]: Substep {i}, Max Total Force: {t_total_force.abs().max().item():.6f}"
+            #     )
 
             if self.object_collision_flag:
                 output_v = self.wp_states[i].wp_v_before_collision
@@ -1170,6 +1202,7 @@ class SpringMassSystemWarp:
                 outputs=[self.wp_states[i + 1].wp_x, self.wp_states[i + 1].wp_v],
             )
 
+        #self.tapes.append([tape_pre_energies, tape_energies, tape_grad_energies, tape_post_energies])
         self.tapes.append([tape_pre_energies, tape_energies, tape_post_energies])
 
     def backward(self, loss):
