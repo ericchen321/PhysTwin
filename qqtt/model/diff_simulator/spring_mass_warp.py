@@ -765,20 +765,25 @@ class SpringMassSystemWarp:
             requires_grad=cfg.collision_learn,
         )
 
+        self.tapes = []
+
         # Create the CUDA graph to acclerate
         if cfg.use_graph:
             if cfg.data_type == "real":
                 if not disable_backward:
                     with wp.ScopedCapture() as capture:
-                        self.tape = wp.Tape()
-                        with self.tape:
-                            self.step()
+                        self.loss_tape = wp.Tape()
+                        self.step()
+                        with self.loss_tape:
                             self.calculate_loss()
-                        self.tape.backward(self.loss)
+                        self.backward(self.loss)
                 else:
                     with wp.ScopedCapture() as capture:
+                        self.loss_tape = wp.Tape()
                         self.step()
-                        self.calculate_loss()
+                        with self.loss_tape:
+                            self.calculate_loss()
+                        self.backward(self.loss)
                 self.graph = capture.graph
             elif cfg.data_type == "synthetic":
                 if not disable_backward:
@@ -939,96 +944,117 @@ class SpringMassSystemWarp:
             outputs=[self.wp_collision_indices, self.wp_collision_number],
         )
 
+    def substep(self, i):
+        self.wp_states[i].clear_forces()
+        if not self.controller_points is None:
+            # Set the control point
+            wp.launch(
+                set_control_points,
+                dim=self.num_control_points,
+                inputs=[
+                    self.num_substeps,
+                    self.wp_original_control_point,
+                    self.wp_target_control_point,
+                    i,
+                ],
+                outputs=[self.wp_states[i].wp_control_x],
+            )
+
+        # Calculate the spring forces
+        wp.launch(
+            kernel=eval_springs,
+            dim=self.n_springs,
+            inputs=[
+                self.wp_states[i].wp_x,
+                self.wp_states[i].wp_v,
+                self.wp_states[i].wp_control_x,
+                self.wp_states[i].wp_control_v,
+                self.num_object_points,
+                self.wp_springs,
+                self.wp_rest_lengths,
+                self.wp_spring_Y,
+                self.dashpot_damping,
+                self.spring_Y_min,
+                self.spring_Y_max,
+            ],
+            outputs=[self.wp_states[i].wp_vertice_forces],
+        )
+
+        if self.object_collision_flag:
+            output_v = self.wp_states[i].wp_v_before_collision
+        else:
+            output_v = self.wp_states[i].wp_v_before_ground
+
+        # Update the output_v using the vertive_forces
+        wp.launch(
+            kernel=update_vel_from_force,
+            dim=self.num_object_points,
+            inputs=[
+                self.wp_states[i].wp_v,
+                self.wp_states[i].wp_vertice_forces,
+                self.wp_masses,
+                self.dt,
+                self.drag_damping,
+                self.reverse_factor,
+            ],
+            outputs=[output_v],
+        )
+
+        if self.object_collision_flag:
+            # Update the wp_v_before_ground based on the collision handling
+            wp.launch(
+                kernel=object_collision,
+                dim=self.num_object_points,
+                inputs=[
+                    self.wp_states[i].wp_x,
+                    self.wp_states[i].wp_v_before_collision,
+                    self.wp_masses,
+                    self.wp_masks,
+                    self.wp_collide_object_elas,
+                    self.wp_collide_object_fric,
+                    self.collision_dist,
+                    self.wp_collision_indices,
+                    self.wp_collision_number,
+                ],
+                outputs=[self.wp_states[i].wp_v_before_ground],
+            )
+
+        # Update the x and v
+        wp.launch(
+            kernel=integrate_ground_collision,
+            dim=self.num_object_points,
+            inputs=[
+                self.wp_states[i].wp_x,
+                self.wp_states[i].wp_v_before_ground,
+                self.wp_collide_elas,
+                self.wp_collide_fric,
+                self.dt,
+                self.reverse_factor,
+            ],
+            outputs=[self.wp_states[i + 1].wp_x, self.wp_states[i + 1].wp_v],
+        )
+    def backward(self, loss):
+        """
+        Backpropagate gradients through all recorded tapes in reverse order.
+        
+        Args:
+            loss: The loss tensor to backpropagate from
+            tapes: List of tapes from the simulation substeps (self.tapes)
+            loss_tape: The tape that recorded the loss calculation
+        """
+        # First, backpropagate through the loss calculation
+        self.loss_tape.backward(loss)
+        
+        # Then backpropagate through all simulation substeps in reverse order
+        # (from last substep to first substep)
+        for tape in reversed(self.tapes):
+            tape.backward()
+
     def step(self):
         for i in range(self.num_substeps):
-            self.wp_states[i].clear_forces()
-            if not self.controller_points is None:
-                # Set the control point
-                wp.launch(
-                    set_control_points,
-                    dim=self.num_control_points,
-                    inputs=[
-                        self.num_substeps,
-                        self.wp_original_control_point,
-                        self.wp_target_control_point,
-                        i,
-                    ],
-                    outputs=[self.wp_states[i].wp_control_x],
-                )
-
-            # Calculate the spring forces
-            wp.launch(
-                kernel=eval_springs,
-                dim=self.n_springs,
-                inputs=[
-                    self.wp_states[i].wp_x,
-                    self.wp_states[i].wp_v,
-                    self.wp_states[i].wp_control_x,
-                    self.wp_states[i].wp_control_v,
-                    self.num_object_points,
-                    self.wp_springs,
-                    self.wp_rest_lengths,
-                    self.wp_spring_Y,
-                    self.dashpot_damping,
-                    self.spring_Y_min,
-                    self.spring_Y_max,
-                ],
-                outputs=[self.wp_states[i].wp_vertice_forces],
-            )
-
-            if self.object_collision_flag:
-                output_v = self.wp_states[i].wp_v_before_collision
-            else:
-                output_v = self.wp_states[i].wp_v_before_ground
-
-            # Update the output_v using the vertive_forces
-            wp.launch(
-                kernel=update_vel_from_force,
-                dim=self.num_object_points,
-                inputs=[
-                    self.wp_states[i].wp_v,
-                    self.wp_states[i].wp_vertice_forces,
-                    self.wp_masses,
-                    self.dt,
-                    self.drag_damping,
-                    self.reverse_factor,
-                ],
-                outputs=[output_v],
-            )
-
-            if self.object_collision_flag:
-                # Update the wp_v_before_ground based on the collision handling
-                wp.launch(
-                    kernel=object_collision,
-                    dim=self.num_object_points,
-                    inputs=[
-                        self.wp_states[i].wp_x,
-                        self.wp_states[i].wp_v_before_collision,
-                        self.wp_masses,
-                        self.wp_masks,
-                        self.wp_collide_object_elas,
-                        self.wp_collide_object_fric,
-                        self.collision_dist,
-                        self.wp_collision_indices,
-                        self.wp_collision_number,
-                    ],
-                    outputs=[self.wp_states[i].wp_v_before_ground],
-                )
-
-            # Update the x and v
-            wp.launch(
-                kernel=integrate_ground_collision,
-                dim=self.num_object_points,
-                inputs=[
-                    self.wp_states[i].wp_x,
-                    self.wp_states[i].wp_v_before_ground,
-                    self.wp_collide_elas,
-                    self.wp_collide_fric,
-                    self.dt,
-                    self.reverse_factor,
-                ],
-                outputs=[self.wp_states[i + 1].wp_x, self.wp_states[i + 1].wp_v],
-            )
+            with wp.Tape() as tape:
+                self.substep(i)
+            self.tapes.append(tape)
 
     def calculate_loss(self):
         # Compute the chamfer loss
