@@ -272,6 +272,13 @@ class OptimizerCMA:
             
             logger.info(f"Best model: {best_wandb_log}")
 
+            # Generate video for the best model in the current iteration
+            self.error_func(
+                best_model,
+                visualize=True,
+                video_path=f"{cfg.base_dir}/optimizeCMA/iter_{es.countiter+1}.mp4",
+            )
+
             # Log model values to wandb
             wandb.log(best_wandb_log, step=es.countiter + 1)
 

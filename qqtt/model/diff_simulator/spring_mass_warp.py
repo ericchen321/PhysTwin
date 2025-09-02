@@ -85,7 +85,7 @@ def compute_total_force(
     total_force: wp.array(dtype=wp.vec3)
 ):
     tid = wp.tid()
-    SCALE = 1.0
+    SCALE = 0.1
     f_e = -1.0 * elastic_force[tid] * SCALE
     f_d = -1.0 * damping_force[tid] * SCALE
 
