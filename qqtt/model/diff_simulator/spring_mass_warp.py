@@ -1158,7 +1158,8 @@ class SpringMassSystemWarp:
             tape_energies.zero()
 
             tape_energies.backward(total_damping)
-            f_damping = tape_energies.gradients[self.wp_states[i].wp_x]
+            f_damping = tape_energies.gradients[self.wp_states[i].wp_v]
+            tape_energies.zero()
 
         #tape_grad_energies.visualize("tape_backward.dot")
 
