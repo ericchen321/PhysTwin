@@ -324,7 +324,7 @@ class OptimizerCMA:
             pickle.dump(optimal_results, f)
 
         wandb.finish()
-
+        
     def error_func(self, parameters, visualize=False, video_path=None):
         global_spring_Y = self.denormalize(
             parameters[0], cfg.spring_Y_min, cfg.spring_Y_max
