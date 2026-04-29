@@ -33,6 +33,24 @@ This repository contains the official implementation of the **PhysTwin** framewo
 ### Update
 **This repository will be actively maintained by the authors, with continuous updates introducing new features to inspire further research.**
 
+- **Actively Developing:** In the long term, we aim to develop a comprehensive physics simulator focused on real-to-sim, serving as an easy-to-use platform for XR, VR, and robotics applications. **Feel free to reach out via email if you’re also interested in this direction and would like to collaborate on related research projects.**
+
+- **To Release:** In our latest project, we will release a batched version of the system, achieving over 300× speedup for accelerated computation and an average 6K FPS throughput (with a maximum of 30K FPS in some cases) in the batch simulation setting. This version also supports low-power execution on edge devices, achieving real-time performance on Jetson-like XR platforms. (A game demo in which an RL policy for rope manipulation is trained in just 3 minutes using the batched simulator.)
+
+<p align="center">
+  <img src="./assets/RL_game.gif" width="50%">
+</p>
+
+- **[26.3.16] MPPI Planning with PhysTwin::** We provide an example codebase in [PhysTwin-MPC](https://github.com/Jianghanxiao/PhysTwin-MPC) demonstrating how to leverage PhysTwin for MPPI-based robot planning. The repository is intended as a reference implementation; users should adapt it to their specific hardware setups, camera configurations, and application requirements.
+
+- **[26.1.21] Add Web Visualization for Headless Server Runs:** Thanks to @CAN-Lee, The interactive playground is now supported through Gradio, enabling web-based interaction even when running on a server without a display. (See below for detailed instructions)
+
+- **[25.11.6] Extend PhysTwin wiht robot physics support:** Explore our extended system [Real2Sim-Eval](https://real2sim-eval.github.io/), which supports both keyboard and Gello-based robot control, enabling physics-based interactions with constructed PhysTwins. We are actively developing a full robotics simulator that will serve as an easy-to-use platform for diverse research applications. A demo version will also be released in this repository soon.
+
+- **[25.10.26] Speed Acceleration for Self-Collision Cases:** For scenarios involving self-collision, instead of checking all particle pairs within a distance threshold, we introduce a mechanism to ignore topologically adjacent particle pairs. This significantly accelerates both optimization and inference in cloth-like cases where self-collision is activated. The main modification is implemented in [code](https://github.com/Jianghanxiao/PhysTwin/blob/release_collision_accelerate/qqtt/engine/trainer_warp.py#L179),and the feature is available in the branch `release_collision_accelerate`. This is a pre-released feature developed as part of an ongoing project. The fully accelerated system will be released once the complete system is done.
+
+![accelerated_example](./assets/cloth_collision_accelerate.gif)
+
 - **[25.7.22] Remote Control Feature & Bug Fix:** Fixed a deprojection error in the data processing pipeline. Added support for remote control—previously, the interactive playground only responded to physical keyboard input; it now accepts virtual keyboard signals from remote devices as well.
 
 - **[25.4.15] GPU Memory Optimization:** Thanks to user feedback and testing, we've further optimized the code to reduce GPU memory usage in the interactive playground—now requiring only about 2GB in total. Previously, LBS initialization consumed a significant amount of GPU memory; it's now offloaded to the CPU and only needs to run once at startup. Everything runs smoothly as a result.
@@ -63,7 +81,7 @@ This repository contains the official implementation of the **PhysTwin** framewo
 </p>
 
 #### Long-Term Plans
-- **Batch Inferencing Support:** Integrate batch inferencing into the underlying SpringMass code, enabling faster rollouts and efficient data generation.
+In the long term, we aim to develop a comprehensive physics simulator focused on real-to-sim, serving as an easy-to-use platform for XR, VR, and robotics applications. **Feel free to reach out via email if you’re also interested in this direction and would like to collaborate on related research projects.**
 
 
 ### Setup
@@ -121,11 +139,11 @@ bash ./env_install/download_pretrained_models.sh
 
 ### Download the PhysTwin Data
 Download the original data, processed data, and results into the project's root folder. (The following sections will explain how to process the raw observations and obtain the training results.)
-- [data](https://drive.google.com/file/d/1A6X7X6yZFYJ8oo6Bd5LLn-RldeCKJw5Z/view?usp=sharing): this includes the original data for different cases and the processed data for quick run. The different case_name can be found under `different_types` folder.
-- [experiments_optimization](https://drive.google.com/file/d/1xKlk3WumFp1Qz31NB4DQxos8jMD_pBAt/view?usp=sharing): results of our first-stage zero-order optimization.
-- [experiments](https://drive.google.com/file/d/1hCGzdGlzL4qvZV3GzOCGiaVBshDgFKjq/view?usp=sharing): results of our second-order optimization.
-- [gaussian_output](https://drive.google.com/file/d/12EoxhEhE90NMAqLlQoj_zM_C63BOftNW/view?usp=sharing): results of our static gaussian appearance.
-- [(optional) additional_data](https://drive.google.com/file/d/1Q9AFDr_yQD-n5YNAe157hViTBC9mo876/view?usp=sharing): data for extra clothing demos not included in the original paper.
+- [data](https://huggingface.co/datasets/Jianghanxiao/PhysTwin/resolve/main/data.zip): this includes the original data for different cases and the processed data for quick run. The different case_name can be found under `different_types` folder.
+- [experiments_optimization](https://huggingface.co/datasets/Jianghanxiao/PhysTwin/resolve/main/experiments_optimization.zip): results of our first-stage zero-order optimization.
+- [experiments](https://huggingface.co/datasets/Jianghanxiao/PhysTwin/resolve/main/experiments.zip): results of our second-order optimization.
+- [gaussian_output](https://huggingface.co/datasets/Jianghanxiao/PhysTwin/resolve/main/gaussian_output.zip): results of our static gaussian appearance.
+- [(optional) additional_data](https://huggingface.co/datasets/Jianghanxiao/PhysTwin/resolve/main/additional_data.zip): data for extra clothing demos not included in the original paper.
 
 ### Play with the Interactive Playground
 Use the previously constructed PhysTwin to explore the interactive playground. Users can interact with the pre-built PhysTwin using keyboard. The next section will provide a detailed guide on how to construct the PhysTwin from the original data.
@@ -244,8 +262,36 @@ python interactive_playground.py --n_ctrl_parts 1 --case_name single_push_rope_1
 python interactive_playground.py --n_ctrl_parts 2 --case_name double_stretch_sloth --n_dup 2
 ```
 
+### Web-based Visualization for headless-server
+This feature is contributed by @CAN-Lee—many thanks to the community for the effort (Pull Request #43).
+
+![Gradio_support](./assets/gradio_support.png)
+
+Try the experimental features for setting up an interactive playground on a server and accessing it through a web browser.
+
+```
+# The stuff is deployed in the `gradio_playground` branch
+git pull
+git checkout gradio_playground
+
+python interactive_playground_gradio.py \
+     --case_name double_lift_cloth_3 \
+     --n_ctrl_parts 2  \
+     --inv_ctrl \
+     --server_port 7860 \
+     --share
+```
+
 ### Follow-up and Potential Collaborations  
 If you are interested in collaborating or extending this work for your research, feel free to contact us at `hanxiao.jiang@columbia.edu`.  
+
+## Projects Developed or Benchmarked with PhysTwin
+* **[NovaFlow: Zero-Shot Manipulation via Actionable Flow from Generated Videos](https://novaflow.lhy.xyz/)**
+* **[Real-to-Sim Robot Policy Evaluation with Gaussian Splatting Simulation of Soft-Body Interactions](https://real2sim-eval.github.io/)**
+* **[PhysWorld: From Real Videos to World Models of Deformable Objects via Physics-Aware Demonstration Synthesis](https://arxiv.org/abs/2510.21447)**
+* **[NeuSpring: Neural Spring Fields for Reconstruction and Simulation of Deformable Objects from Videos](https://arxiv.org/abs/2511.08310)**
+* **[Cool PhysTwin Data Collection Pipeline using SO-101](https://github.com/TabithaKO/PhysTwin)**
+* ...
 
 ### Citation
 If you find this repo useful for your research, please consider citing the paper
