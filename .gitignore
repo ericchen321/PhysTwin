@@ -210,3 +210,7 @@ cython_debug/
 !assets/arrow_fill_v1.png
 !assets/Picture1.png
 !assets/Picture2.png
+
+.codex/
+AGENTS.md
+CLAUDE.md

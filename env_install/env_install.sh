@@ -33,7 +33,7 @@ pip install accelerate
 
 # Install the env for trellis
 cd data_process
-git clone --recurse-submodules https://github.com/ericchen321/TRELLIS
+git clone --recurse-submodules https://github.com/microsoft/TRELLIS
 cd TRELLIS
 . ./setup.sh --basic --xformers --flash-attn --diffoctreerast --spconv --mipgaussian --kaolin --nvdiffrast
 
