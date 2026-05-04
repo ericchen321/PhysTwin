@@ -937,7 +937,13 @@ class InvPhyTrainerWarp:
         return self.structure_points[min_idx].unsqueeze(0)
 
     def interactive_playground(
-        self, model_path, gs_path, n_ctrl_parts=1, inv_ctrl=False, virtual_key_input=False
+        self,
+        model_path,
+        gs_path,
+        n_ctrl_parts=1,
+        inv_ctrl=False,
+        virtual_key_input=False,
+        auto_traj=None,
     ):
         # Load the model
         logger.info(f"Load model from {model_path}")
@@ -1033,21 +1039,22 @@ class InvPhyTrainerWarp:
         print("- Set 1: WASD (XY movement), QE (Z movement)")
         print("- Set 2: IJKL (XY movement), UO (Z movement)")
         self.inv_ctrl = -1.0 if inv_ctrl else 1.0
+        ctrl_step = 0.05
         self.key_mappings = {
             # Set 1 controls
-            "w": (0, np.array([0.005, 0, 0]) * self.inv_ctrl),
-            "s": (0, np.array([-0.005, 0, 0]) * self.inv_ctrl),
-            "a": (0, np.array([0, -0.005, 0]) * self.inv_ctrl),
-            "d": (0, np.array([0, 0.005, 0]) * self.inv_ctrl),
-            "e": (0, np.array([0, 0, 0.005])),
-            "q": (0, np.array([0, 0, -0.005])),
+            "w": (0, np.array([ctrl_step, 0, 0]) * self.inv_ctrl),
+            "s": (0, np.array([-ctrl_step, 0, 0]) * self.inv_ctrl),
+            "a": (0, np.array([0, -ctrl_step, 0]) * self.inv_ctrl),
+            "d": (0, np.array([0, ctrl_step, 0]) * self.inv_ctrl),
+            "e": (0, np.array([0, 0, ctrl_step])),
+            "q": (0, np.array([0, 0, -ctrl_step])),
             # Set 2 controls
-            "i": (1, np.array([0.005, 0, 0]) * self.inv_ctrl),
-            "k": (1, np.array([-0.005, 0, 0]) * self.inv_ctrl),
-            "j": (1, np.array([0, -0.005, 0]) * self.inv_ctrl),
-            "l": (1, np.array([0, 0.005, 0]) * self.inv_ctrl),
-            "o": (1, np.array([0, 0, 0.005])),
-            "u": (1, np.array([0, 0, -0.005])),
+            "i": (1, np.array([ctrl_step, 0, 0]) * self.inv_ctrl),
+            "k": (1, np.array([-ctrl_step, 0, 0]) * self.inv_ctrl),
+            "j": (1, np.array([0, -ctrl_step, 0]) * self.inv_ctrl),
+            "l": (1, np.array([0, ctrl_step, 0]) * self.inv_ctrl),
+            "o": (1, np.array([0, 0, ctrl_step])),
+            "u": (1, np.array([0, 0, -ctrl_step])),
         }
         self.pressed_keys = set()
         self.w2c = w2c
@@ -1069,10 +1076,68 @@ class InvPhyTrainerWarp:
             # Initialize keyboard tracking variables
             self.virtual_keys = {}     # Dictionary to track virtual keys with timestamps
             self.virtual_key_duration = 0.03  # Virtual key press duration in seconds
-        
+
         listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         listener.start()
         self.target_change = np.zeros((n_ctrl_parts, 3))
+
+        # Build auto-trajectory generator
+        def _lift_phase(c, n_ctrl_parts, lift=0.40, lift_step=0.01):
+            """Shared lift phase: yields per-frame deltas and updates c in-place."""
+            n_lift = round(lift / lift_step)
+            for _ in range(n_lift):
+                change = np.zeros((n_ctrl_parts, 3))
+                for i in range(n_ctrl_parts):
+                    change[i, 2] = -lift_step  # -Z is up
+                for i in range(n_ctrl_parts):
+                    c[i][2] -= lift_step
+                yield change
+
+        def _make_circle_gen(center0, center1):
+            """Lift 40cm then clockwise circle, arc step 6cm/frame."""
+            c = [center0.copy(), center1.copy()]
+            yield from _lift_phase(c, n_ctrl_parts)
+            mid = (c[0] + c[1]) / 2
+            radius = np.linalg.norm(c[1][:2] - c[0][:2]) / 2
+            angles = [np.arctan2(ci[1] - mid[1], ci[0] - mid[0]) for ci in c]
+            dtheta = 0.06 / max(radius, 1e-6)
+            while True:
+                change = np.zeros((n_ctrl_parts, 3))
+                for i in range(n_ctrl_parts):
+                    angles[i] -= dtheta  # clockwise
+                    new_c = np.array([
+                        mid[0] + radius * np.cos(angles[i]),
+                        mid[1] + radius * np.sin(angles[i]),
+                        c[i][2],
+                    ])
+                    change[i] = new_c - c[i]
+                    c[i] = new_c
+                yield change
+
+        def _make_swing_gen(center0, center1):
+            """Lift 25cm then both points swing in X axis: 20cm range, 5cm/step."""
+            c = [center0.copy(), center1.copy()]
+            yield from _lift_phase(c, n_ctrl_parts, lift=0.25)
+            swing_step = 0.05
+            n_steps = round(0.20 / swing_step)  # steps per half-stroke = 4
+            direction = 1.0
+            remaining = n_steps
+            while True:
+                change = np.zeros((n_ctrl_parts, 3))
+                for i in range(n_ctrl_parts):
+                    change[i, 0] = direction * swing_step
+                remaining -= 1
+                if remaining <= 0:
+                    direction *= -1
+                    remaining = n_steps
+                yield change
+
+        if auto_traj in ("circle", "swing") and n_ctrl_parts >= 2:
+            c0 = self.hand_left_pos.cpu().numpy().flatten()
+            c1 = self.hand_right_pos.cpu().numpy().flatten()
+            auto_traj_gen = _make_circle_gen(c0, c1) if auto_traj == "circle" else _make_swing_gen(c0, c1)
+        else:
+            auto_traj_gen = None
 
         ############## Temporary timer ##############
         import time
@@ -1304,7 +1369,10 @@ class InvPhyTrainerWarp:
             prev_x = x.clone()
 
             prev_target = current_target
-            target_change = self.get_target_change()
+            if auto_traj_gen is not None:
+                target_change = next(auto_traj_gen)
+            else:
+                target_change = self.get_target_change()
             if masks_ctrl_pts is not None:
                 for i in range(n_ctrl_parts):
                     if masks_ctrl_pts[i].sum() > 0:
