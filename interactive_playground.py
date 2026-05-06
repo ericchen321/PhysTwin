@@ -49,6 +49,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--virtual_key_input", action="store_true", help="use virtual key input"
     )
+    parser.add_argument(
+        "--auto_traj",
+        type=str,
+        choices=["circle", "swing"],
+        default=None,
+        help="auto trajectory: 'circle' = lift then clockwise rotation; 'swing' = lift then back-and-forth",
+    )
     args = parser.parse_args()
 
     base_path = args.base_path
@@ -100,4 +107,5 @@ if __name__ == "__main__":
         args.n_ctrl_parts,
         args.inv_ctrl,
         virtual_key_input=args.virtual_key_input,
+        auto_traj=args.auto_traj,
     )
