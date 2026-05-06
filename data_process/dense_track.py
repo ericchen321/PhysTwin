@@ -21,6 +21,9 @@ args = parser.parse_args()
 base_path = args.base_path
 case_name = args.case_name
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TORCH_HUB_DIR = os.path.join(PROJECT_ROOT, ".cache", "torch_hub")
+
 num_cam = 3
 assert len(glob.glob(f"{base_path}/{case_name}/depth/*")) == num_cam
 device = "cuda"
@@ -38,7 +41,13 @@ def exist_dir(dir):
         os.makedirs(dir)
 
 
+def configure_torch_hub_cache():
+    exist_dir(TORCH_HUB_DIR)
+    torch.hub.set_dir(TORCH_HUB_DIR)
+
+
 if __name__ == "__main__":
+    configure_torch_hub_cache()
     exist_dir(f"{base_path}/{case_name}/cotracker")
 
     for i in range(num_cam):

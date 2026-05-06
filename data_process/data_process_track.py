@@ -155,7 +155,8 @@ def filter_motion(track_data, neighbor_dist=0.01):
     num_points = object_points.shape[1]
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    if not vis.create_window():
+        vis = None
     for i in tqdm(range(num_frames - 1)):
         # Convert the points of the current frame to an Open3D point cloud
         pcd = o3d.geometry.PointCloud()
@@ -212,14 +213,15 @@ def filter_motion(track_data, neighbor_dist=0.01):
             render_motion_pcd = motion_pcd
             # render_modified_pcd = modified_pcd
             # render_new_pcd = new_pcd
-            vis.add_geometry(render_motion_pcd)
-            # vis.add_geometry(render_modified_pcd)
-            # vis.add_geometry(render_new_pcd)
-            # Adjust the viewpoint
-            view_control = vis.get_view_control()
-            view_control.set_front([1, 0, -2])
-            view_control.set_up([0, 0, -1])
-            view_control.set_zoom(1)
+            if vis is not None:
+                vis.add_geometry(render_motion_pcd)
+                # vis.add_geometry(render_modified_pcd)
+                # vis.add_geometry(render_new_pcd)
+                # Adjust the viewpoint
+                view_control = vis.get_view_control()
+                view_control.set_front([1, 0, -2])
+                view_control.set_up([0, 0, -1])
+                view_control.set_zoom(1)
         else:
             render_motion_pcd.points = o3d.utility.Vector3dVector(motion_pcd.points)
             render_motion_pcd.colors = o3d.utility.Vector3dVector(motion_pcd.colors)
@@ -231,15 +233,17 @@ def filter_motion(track_data, neighbor_dist=0.01):
             # render_new_pcd.colors = o3d.utility.Vector3dVector(
             #     np.array([0, 1, 0]) * np.ones((len(new_points), 3))
             # )
-            vis.update_geometry(render_motion_pcd)
-            # vis.update_geometry(render_modified_pcd)
-            # vis.update_geometry(render_new_pcd)
-            vis.poll_events()
-            vis.update_renderer()
+            if vis is not None:
+                vis.update_geometry(render_motion_pcd)
+                # vis.update_geometry(render_modified_pcd)
+                # vis.update_geometry(render_new_pcd)
+                vis.poll_events()
+                vis.update_renderer()
         # modified_num = len(modified_points)
         # print(f"Object Frame {i}: {modified_num} points are modified")
 
-    vis.destroy_window()
+    if vis is not None:
+        vis.destroy_window()
     track_data["object_motions_valid"] = object_motions_valid
 
     controller_points = track_data["controller_points"]
@@ -262,7 +266,8 @@ def filter_motion(track_data, neighbor_dist=0.01):
     rainbow_colors = plt.cm.rainbow(y_normalized)[:, :3]
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    if not vis.create_window():
+        vis = None
 
     for i in tqdm(range(num_frames - 1)):
         # Convert the points of the current frame to an Open3D point cloud
@@ -305,18 +310,20 @@ def filter_motion(track_data, neighbor_dist=0.01):
 
         if i == 0:
             render_motion_pcd = motion_pcd
-            vis.add_geometry(render_motion_pcd)
-            # Adjust the viewpoint
-            view_control = vis.get_view_control()
-            view_control.set_front([1, 0, -2])
-            view_control.set_up([0, 0, -1])
-            view_control.set_zoom(1)
+            if vis is not None:
+                vis.add_geometry(render_motion_pcd)
+                # Adjust the viewpoint
+                view_control = vis.get_view_control()
+                view_control.set_front([1, 0, -2])
+                view_control.set_up([0, 0, -1])
+                view_control.set_zoom(1)
         else:
             render_motion_pcd.points = o3d.utility.Vector3dVector(motion_pcd.points)
             render_motion_pcd.colors = o3d.utility.Vector3dVector(motion_pcd.colors)
-            vis.update_geometry(render_motion_pcd)
-            vis.poll_events()
-            vis.update_renderer()
+            if vis is not None:
+                vis.update_geometry(render_motion_pcd)
+                vis.poll_events()
+                vis.update_renderer()
 
     track_data["controller_mask"] = mask
     return track_data
@@ -385,7 +392,8 @@ def visualize_track(track_data):
     frame_num = object_points.shape[0]
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    if not vis.create_window():
+        return
     controller_meshes = []
     prev_center = []
 
@@ -438,10 +446,12 @@ def visualize_track(track_data):
 if __name__ == "__main__":
     pcd_path = f"{base_path}/{case_name}/pcd"
     mask_path = f"{base_path}/{case_name}/mask"
-    track_path = f"{base_path}/{case_name}/cotracker"
 
     num_cam = len(glob.glob(f"{mask_path}/mask_info_*.json"))
     frame_num = len(glob.glob(f"{pcd_path}/*.npz"))
+    track_path = f"{base_path}/{case_name}"
+    if len(glob.glob(f"{track_path}/*.npz")) < num_cam:
+        track_path = f"{base_path}/{case_name}/cotracker"
 
     # Filter the track data using the semantic mask of object and controller
     track_data = filter_track(track_path, pcd_path, mask_path, frame_num, num_cam)

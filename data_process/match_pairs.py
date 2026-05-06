@@ -83,6 +83,7 @@ def image_pair_matching(
     viz_extension="png",
     save=False,
     viz_best=True,
+    return_all=False,
 ):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -241,4 +242,6 @@ def image_pair_matching(
         )
 
         timer.update("viz_match")
+    if return_all:
+        return best_pose, match_result[best_pose], match_result, match_nums
     return best_pose, match_result[best_pose]

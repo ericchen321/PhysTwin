@@ -117,26 +117,26 @@ def process_unique_points(track_data):
     coorindate = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1)
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window(visible=False)
-    dummy_frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-    height, width, _ = dummy_frame.shape
-    fourcc = cv2.VideoWriter_fourcc(*"avc1")
-    video_writer = cv2.VideoWriter(
-        f"{base_path}/{case_name}/final_pcd.mp4", fourcc, 30, (width, height)
-    )
+    if vis.create_window(visible=False):
+        dummy_frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+        height, width, _ = dummy_frame.shape
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")
+        video_writer = cv2.VideoWriter(
+            f"{base_path}/{case_name}/final_pcd.mp4", fourcc, 30, (width, height)
+        )
 
-    vis.add_geometry(all_pcd)
-    # vis.add_geometry(coorindate)
-    view_control = vis.get_view_control()
-    for j in range(360):
-        view_control.rotate(10, 0)
-        vis.poll_events()
-        vis.update_renderer()
-        frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-        frame = (frame * 255).astype(np.uint8)
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        video_writer.write(frame)
-    vis.destroy_window()
+        vis.add_geometry(all_pcd)
+        # vis.add_geometry(coorindate)
+        view_control = vis.get_view_control()
+        for j in range(360):
+            view_control.rotate(10, 0)
+            vis.poll_events()
+            vis.update_renderer()
+            frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+            frame = (frame * 255).astype(np.uint8)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            video_writer.write(frame)
+        vis.destroy_window()
 
     track_data.pop("object_points")
     track_data.pop("object_colors")
@@ -166,7 +166,8 @@ def visualize_track(track_data):
     frame_num = object_points.shape[0]
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window(visible=False)
+    if not vis.create_window(visible=False):
+        return
     dummy_frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
     height, width, _ = dummy_frame.shape
     fourcc = cv2.VideoWriter_fourcc(*"avc1")

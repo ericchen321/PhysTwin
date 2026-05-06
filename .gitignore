@@ -211,6 +211,10 @@ cython_debug/
 !assets/Picture1.png
 !assets/Picture2.png
 
+.vscode/
+
 .codex/
+.claude/
+.agents/
 AGENTS.md
 CLAUDE.md

@@ -7,6 +7,7 @@ import cv2
 import json
 import torch
 import os
+import math
 from utils.align_util import (
     render_multi_images,
     render_image,
@@ -43,6 +44,24 @@ def existDir(dir_path):
         os.makedirs(dir_path)
 
 
+def matrix_to_realsim_euler_deg(rotation_matrix):
+    sp = -rotation_matrix[2, 0]
+    sp = np.clip(sp, -1.0, 1.0)
+    pitch = math.asin(sp)
+
+    if abs(sp) < 0.99999:
+        roll = math.atan2(rotation_matrix[2, 1], rotation_matrix[2, 2])
+        yaw = math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+    else:
+        roll = math.atan2(-rotation_matrix[1, 2], rotation_matrix[1, 1])
+        yaw = 0.0
+
+    return np.array(
+        [math.degrees(roll), math.degrees(pitch), math.degrees(yaw)],
+        dtype=np.float64,
+    )
+
+
 def pose_selection_render_superglue(
     raw_img, fov, mesh_path, mesh, crop_img, output_dir
 ):
@@ -64,10 +83,33 @@ def pose_selection_render_superglue(
     )
     grays = [cv2.cvtColor(color, cv2.COLOR_BGR2GRAY) for color in colors]
     # Use superglue to match the features
-    best_idx, match_result = image_pair_matching(
-        grays, crop_img, output_dir, viz_best=True
+    best_idx, match_result, match_results, match_nums = image_pair_matching(
+        grays, crop_img, output_dir, viz_best=True, return_all=True
     )
+    depth_match_nums = []
+    for depth, result in zip(depths, match_results):
+        valid_matches = result["matches"] > -1
+        render_matching_points = result["keypoints0"][valid_matches]
+        valid_depth_num = 0
+        for u, v in render_matching_points:
+            u = int(u)
+            v = int(v)
+            if (
+                0 <= v < depth.shape[0]
+                and 0 <= u < depth.shape[1]
+                and depth[v, u] > 0
+            ):
+                valid_depth_num += 1
+        depth_match_nums.append(valid_depth_num)
+    depth_match_nums = np.array(depth_match_nums)
+    projectable_indices = np.where(depth_match_nums >= 4)[0]
+    if len(projectable_indices) > 0:
+        best_idx = projectable_indices[
+            np.argmax(np.array(match_nums)[projectable_indices])
+        ]
+        match_result = match_results[best_idx]
     print("matched point number", np.sum(match_result["matches"] > -1))
+    print("projectable matched point number", depth_match_nums[best_idx])
 
     best_color = colors[best_idx]
     best_depth = depths[best_idx]
@@ -472,6 +514,19 @@ if __name__ == "__main__":
     scale_matrix[3, 3] = 1
     mesh2world = np.dot(c2w, np.dot(scale_matrix, mesh2raw_camera))
 
+    linear = mesh2world[:3, :3].astype(np.float64)
+    position = mesh2world[:3, 3].astype(np.float64)
+    scale_value = float(np.mean(np.linalg.norm(linear, axis=0)))
+    rotation_matrix = linear / scale_value
+    rotation = matrix_to_realsim_euler_deg(rotation_matrix)
+    scale = np.full(3, scale_value, dtype=np.float64)
+    np.savez(
+        f"{base_path}/{case_name}/mesh_transform.npz",
+        position=position,
+        rotation=rotation,
+        scale=scale,
+    )
+
     mesh_matching_points_world = np.dot(
         mesh2world,
         np.hstack(
@@ -523,31 +578,31 @@ if __name__ == "__main__":
 
         # Render the final stuffs as a turntable video
         vis = o3d.visualization.Visualizer()
-        vis.create_window(visible=False)
-        dummy_frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-        height, width, _ = dummy_frame.shape
-        fourcc = cv2.VideoWriter_fourcc(*"avc1")
-        video_writer = cv2.VideoWriter(
-            f"{output_dir}/final_matching.mp4", fourcc, 30, (width, height)
-        )
-        # final_mesh_world.compute_vertex_normals()
-        # final_mesh_world.translate([0, 0, 0.2])
-        # mesh_wireframe = o3d.geometry.LineSet.create_from_triangle_mesh(final_mesh_world)
-        # o3d.visualization.draw_geometries([pcd, final_mesh_world], window_name="Matching")
-        vis.add_geometry(pcd)
-        vis.add_geometry(final_mesh_world)
-        # vis.add_geometry(coordinate)
-        view_control = vis.get_view_control()
+        if vis.create_window(visible=False):
+            dummy_frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+            height, width, _ = dummy_frame.shape
+            fourcc = cv2.VideoWriter_fourcc(*"avc1")
+            video_writer = cv2.VideoWriter(
+                f"{output_dir}/final_matching.mp4", fourcc, 30, (width, height)
+            )
+            # final_mesh_world.compute_vertex_normals()
+            # final_mesh_world.translate([0, 0, 0.2])
+            # mesh_wireframe = o3d.geometry.LineSet.create_from_triangle_mesh(final_mesh_world)
+            # o3d.visualization.draw_geometries([pcd, final_mesh_world], window_name="Matching")
+            vis.add_geometry(pcd)
+            vis.add_geometry(final_mesh_world)
+            # vis.add_geometry(coordinate)
+            view_control = vis.get_view_control()
 
-        for j in range(360):
-            view_control.rotate(10, 0)
-            vis.poll_events()
-            vis.update_renderer()
-            frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
-            frame = (frame * 255).astype(np.uint8)
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            video_writer.write(frame)
-        vis.destroy_window()
+            for j in range(360):
+                view_control.rotate(10, 0)
+                vis.poll_events()
+                vis.update_renderer()
+                frame = np.asarray(vis.capture_screen_float_buffer(do_render=True))
+                frame = (frame * 255).astype(np.uint8)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                video_writer.write(frame)
+            vis.destroy_window()
 
     mesh.vertices = np.asarray(final_mesh_world.vertices)[trimesh_indices]
     mesh.export(f"{output_dir}/final_mesh.glb")

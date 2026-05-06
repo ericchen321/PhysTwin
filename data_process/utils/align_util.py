@@ -11,6 +11,7 @@ from pytorch3d.renderer import (
     MeshRenderer,
     MeshRasterizer,
     SoftPhongShader,
+    TexturesVertex,
 )
 from scipy.spatial import cKDTree
 
@@ -115,8 +116,18 @@ def project_2d_to_3d(image_points, depth, camera_intrinsics, camera_pose):
     cx, cy = camera_intrinsics[0, 2], camera_intrinsics[1, 2]
     # Convert image points to normalized device coordinates (NDC)
     ndc_points = np.zeros((image_points.shape[0], 3))
+    valid_depth_coords = np.column_stack(np.where(depth > 0))
+    depth_tree = None
+    if len(valid_depth_coords) > 0:
+        depth_tree = cKDTree(valid_depth_coords[:, ::-1])
     for i, (u, v) in enumerate(image_points):
-        z = depth[int(v), int(u)]
+        u = int(u)
+        v = int(v)
+        z = depth[v, u]
+        if z <= 0 and depth_tree is not None:
+            _, nearest_idx = depth_tree.query([u, v])
+            u, v = valid_depth_coords[nearest_idx, ::-1]
+            z = depth[v, u]
         x = -(u - cx) * z / fx
         y = -(v - cy) * z / fy
         ndc_points[i] = [x, y, z]
@@ -178,6 +189,10 @@ def render_image(mesh, camera_poses, width=640, height=480, fov=1, device="cpu")
     io.register_meshes_format(MeshGlbFormat())
     mesh = io.load_mesh(mesh)
     mesh = mesh.to(device)
+    if mesh.textures is None:
+        mesh.textures = TexturesVertex(
+            verts_features=torch.full_like(mesh.verts_padded(), 0.7)
+        )
 
     R = camera_poses[:, :3, :3]
     T = camera_poses[:, 3, :3]

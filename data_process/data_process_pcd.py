@@ -182,12 +182,14 @@ if __name__ == "__main__":
         cameras += camera
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    for camera in cameras:
-        vis.add_geometry(camera)
+    if vis.create_window():
+        for camera in cameras:
+            vis.add_geometry(camera)
 
-    coordinate = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
-    vis.add_geometry(coordinate)
+        coordinate = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+        vis.add_geometry(coordinate)
+    else:
+        vis = None
 
     pcd = None
     for i in tqdm(range(frame_num)):
@@ -203,12 +205,13 @@ if __name__ == "__main__":
             pcd.colors = o3d.utility.Vector3dVector(
                 colors.reshape(-1, 3)[masks.reshape(-1)]
             )
-            vis.add_geometry(pcd)
-            # Adjust the viewpoint
-            view_control = vis.get_view_control()
-            view_control.set_front([1, 0, -2])
-            view_control.set_up([0, 0, -1])
-            view_control.set_zoom(1)
+            if vis is not None:
+                vis.add_geometry(pcd)
+                # Adjust the viewpoint
+                view_control = vis.get_view_control()
+                view_control.set_front([1, 0, -2])
+                view_control.set_up([0, 0, -1])
+                view_control.set_zoom(1)
         else:
             pcd.points = o3d.utility.Vector3dVector(
                 points.reshape(-1, 3)[masks.reshape(-1)]
@@ -216,10 +219,11 @@ if __name__ == "__main__":
             pcd.colors = o3d.utility.Vector3dVector(
                 colors.reshape(-1, 3)[masks.reshape(-1)]
             )
-            vis.update_geometry(pcd)
+            if vis is not None:
+                vis.update_geometry(pcd)
 
-            vis.poll_events()
-            vis.update_renderer()
+                vis.poll_events()
+                vis.update_renderer()
 
         np.savez(
             f"{base_path}/{case_name}/pcd/{i}.npz",

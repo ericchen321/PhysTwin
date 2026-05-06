@@ -178,7 +178,8 @@ if __name__ == "__main__":
                     mask_info[i]["controller"] = [int(key)]
 
     vis = o3d.visualization.Visualizer()
-    vis.create_window()
+    if not vis.create_window():
+        vis = None
 
     object_pcd = None
     controller_pcd = None
@@ -189,13 +190,14 @@ if __name__ == "__main__":
         if i == 0:
             object_pcd = temp_object_pcd
             controller_pcd = temp_controller_pcd
-            vis.add_geometry(object_pcd)
-            vis.add_geometry(controller_pcd)
-            # Adjust the viewpoint
-            view_control = vis.get_view_control()
-            view_control.set_front([1, 0, -2])
-            view_control.set_up([0, 0, -1])
-            view_control.set_zoom(1)
+            if vis is not None:
+                vis.add_geometry(object_pcd)
+                vis.add_geometry(controller_pcd)
+                # Adjust the viewpoint
+                view_control = vis.get_view_control()
+                view_control.set_front([1, 0, -2])
+                view_control.set_up([0, 0, -1])
+                view_control.set_zoom(1)
         else:
             object_pcd.points = o3d.utility.Vector3dVector(temp_object_pcd.points)
             object_pcd.colors = o3d.utility.Vector3dVector(temp_object_pcd.colors)
@@ -205,10 +207,11 @@ if __name__ == "__main__":
             controller_pcd.colors = o3d.utility.Vector3dVector(
                 temp_controller_pcd.colors
             )
-            vis.update_geometry(object_pcd)
-            vis.update_geometry(controller_pcd)
-            vis.poll_events()
-            vis.update_renderer()
+            if vis is not None:
+                vis.update_geometry(object_pcd)
+                vis.update_geometry(controller_pcd)
+                vis.poll_events()
+                vis.update_renderer()
 
     # Save the processed masks considering both depth filter, semantic filter and outlier filter
     with open(f"{base_path}/{case_name}/mask/processed_masks.pkl", "wb") as f:
