@@ -944,6 +944,8 @@ class InvPhyTrainerWarp:
         inv_ctrl=False,
         virtual_key_input=False,
         auto_traj=None,
+        render_output_dir=None,
+        render_capture_fps=10.0,
     ):
         # Load the model
         logger.info(f"Load model from {model_path}")
@@ -979,7 +981,7 @@ class InvPhyTrainerWarp:
             self.simulator.wp_states[0].wp_x, requires_grad=False
         ).clone()
 
-        vis_cam_idx = 0
+        vis_cam_idx = 2
         FPS = cfg.FPS
         width, height = cfg.WH
         intrinsic = cfg.intrinsics[vis_cam_idx]
@@ -1117,9 +1119,9 @@ class InvPhyTrainerWarp:
         def _make_swing_gen(center0, center1):
             """Lift 25cm then both points swing in X axis: 20cm range, 5cm/step."""
             c = [center0.copy(), center1.copy()]
-            yield from _lift_phase(c, n_ctrl_parts, lift=0.25)
-            swing_step = 0.05
-            n_steps = round(0.20 / swing_step)  # steps per half-stroke = 4
+            yield from _lift_phase(c, n_ctrl_parts, lift=0.45)
+            swing_step = 0.02
+            n_steps = round(0.40 / swing_step)  # steps per half-stroke = 4
             direction = 1.0
             remaining = n_steps
             while True:
@@ -1201,6 +1203,21 @@ class InvPhyTrainerWarp:
         frame_count = 0
 
         ############## End Temporary timer ##############
+
+        render_enabled = render_output_dir is not None and render_capture_fps > 0
+        if render_enabled:
+            os.makedirs(render_output_dir, exist_ok=True)
+            logger.info(
+                f"Saving interactive playground PNG renders to {render_output_dir}"
+            )
+
+        sim_step_seconds = float(cfg.dt) * int(cfg.num_substeps)
+        capture_interval_seconds = (
+            1.0 / float(render_capture_fps) if render_enabled else None
+        )
+        simulated_time_seconds = 0.0
+        next_capture_time_seconds = capture_interval_seconds
+        render_frame_idx = 0
 
         while True:
 
@@ -1288,6 +1305,21 @@ class InvPhyTrainerWarp:
             )
             frame[final_shadow] = (frame[final_shadow] * 0.98).astype(np.uint8)
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            simulated_time_seconds += sim_step_seconds
+
+            if (
+                render_enabled
+                and simulated_time_seconds + 1e-9 >= next_capture_time_seconds
+            ):
+                render_path = os.path.join(
+                    render_output_dir, f"frame_{render_frame_idx:06d}.png"
+                )
+                if not cv2.imwrite(render_path, frame):
+                    raise RuntimeError(f"Failed to write render frame: {render_path}")
+                render_frame_idx += 1
+                while next_capture_time_seconds <= simulated_time_seconds + 1e-9:
+                    next_capture_time_seconds += capture_interval_seconds
 
             cv2.imshow("Interactive Playground", frame)
             key = cv2.waitKey(1)

@@ -66,7 +66,7 @@ python -c 'import sys; print(sys.executable); print(sys.prefix)'
 pip --version
 
 conda install -y numpy==1.26.4
-# pip install warp-lang
+pip install warp-lang==1.7.1 # a known version to be compatible
 pip install usd-core matplotlib
 pip install "pyglet<2"
 pip install open3d
@@ -124,9 +124,18 @@ pip install accelerate
 
 # cd ../..
 
-# pip install gsplat==1.4.0
-# pip install kornia
+pip install gsplat==1.4.0
+pip install kornia
 # cd gaussian_splatting/
 # pip install submodules/diff-gaussian-rasterization/
 # pip install submodules/simple-knn/
 # cd ..
+cd gaussian_splatting/submodules/diff-gaussian-rasterization/
+python setup.py build_ext --inplace
+pip install --no-build-isolation -e .
+cd ../simple-knn/
+python setup.py build_ext --inplace
+pip install --no-build-isolation -e .
+cd ../../../
+
+pip install plyfile einops

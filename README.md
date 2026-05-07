@@ -153,6 +153,16 @@ Use the previously constructed PhysTwin to explore the interactive playground. U
 Run the interactive playground with our different cases (Need to wait some time for the first usage of interactive playground; Can achieve about 37 FPS using RTX 4090 on sloth case)
 
 ```
+# (Preliminary which may be needed) preload newer libstdc++, to enforce the linker to use conda-env libstdc++ instead of the system on
+
+export LD_PRELOAD="$HOME/anaconda3/envs/phystwin/lib/libstdc++.so.6:$LD_PRELOAD"
+
+# (Preliminary which may be needed) for running inside a VNC session:
+
+export LD_LIBRARY_PATH="$HOME/anaconda3/envs/phystwin/lib/python3.10/site-packages/torch/lib:$HOME/anaconda3/envs/phystwin/lib:$LD_LIBRARY_PATH"
+
+# (Preliminary which may be needed) make sure CUDA binary has been added to PATH and CUDA library has been added to LD_LIBRARY_PATH
+
 python interactive_playground.py \
 (--inv_ctrl) \
 --n_ctrl_parts [1 or 2] \

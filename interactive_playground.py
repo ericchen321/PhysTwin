@@ -56,10 +56,22 @@ if __name__ == "__main__":
         default=None,
         help="auto trajectory: 'circle' = lift then clockwise rotation; 'swing' = lift then back-and-forth",
     )
+    parser.add_argument(
+        "--render_output_root",
+        type=str,
+        default="./interactive_playground_renders",
+    )
+    parser.add_argument("--render_capture_fps", type=float, default=10.0)
+    parser.add_argument("--no_png_renders", action="store_true")
     args = parser.parse_args()
 
     base_path = args.base_path
     case_name = args.case_name
+    render_output_dir = None
+    if args.auto_traj is not None and not args.no_png_renders:
+        render_output_dir = os.path.join(
+            args.render_output_root, f"{case_name}_auto_traj_{args.auto_traj}"
+        )
 
     if "cloth" in case_name or "package" in case_name:
         cfg.load_from_yaml("configs/cloth.yaml")
@@ -108,4 +120,6 @@ if __name__ == "__main__":
         args.inv_ctrl,
         virtual_key_input=args.virtual_key_input,
         auto_traj=args.auto_traj,
+        render_output_dir=render_output_dir,
+        render_capture_fps=args.render_capture_fps,
     )
