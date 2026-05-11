@@ -946,6 +946,8 @@ class InvPhyTrainerWarp:
         auto_traj=None,
         render_output_dir=None,
         render_capture_fps=10.0,
+        vis_w2c=None,
+        vis_intrinsic=None,
     ):
         # Load the model
         logger.info(f"Load model from {model_path}")
@@ -970,6 +972,10 @@ class InvPhyTrainerWarp:
             collide_object_elas.detach().clone(),
             collide_object_fric.detach().clone(),
         )
+        total_object_mass = float(
+            wp.to_torch(self.simulator.wp_masses, requires_grad=False).sum().item()
+        )
+        logger.info(f"Total object mass: {total_object_mass}")
 
         ###########################################################################
 
@@ -984,8 +990,12 @@ class InvPhyTrainerWarp:
         vis_cam_idx = 2
         FPS = cfg.FPS
         width, height = cfg.WH
-        intrinsic = cfg.intrinsics[vis_cam_idx]
-        w2c = cfg.w2cs[vis_cam_idx]
+        intrinsic = (
+            np.array(vis_intrinsic)
+            if vis_intrinsic is not None
+            else cfg.intrinsics[vis_cam_idx]
+        )
+        w2c = np.array(vis_w2c) if vis_w2c is not None else cfg.w2cs[vis_cam_idx]
 
         current_target = self.simulator.controller_points[0]
         prev_target = current_target
