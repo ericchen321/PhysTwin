@@ -21,6 +21,31 @@ def set_all_seeds(seed):
     torch.backends.cudnn.benchmark = False
 
 
+def _normalize_vector(v):
+    norm = np.linalg.norm(v)
+    if norm == 0:
+        raise ValueError("Camera vector must be non-zero")
+    return v / norm
+
+
+def camera_setup_to_c2w(camera_setup):
+    position = np.array(camera_setup["position"], dtype=np.float64)
+    look_at = np.array(camera_setup["look_at"], dtype=np.float64)
+    up = np.array(camera_setup["up"], dtype=np.float64)
+
+    z_axis = _normalize_vector(position - look_at)
+    x_axis = np.cross(up, z_axis)
+    if np.linalg.norm(x_axis) < 1e-8:
+        raise ValueError("Camera up vector cannot be parallel to view direction")
+    x_axis = _normalize_vector(x_axis)
+    y_axis = _normalize_vector(np.cross(z_axis, x_axis))
+
+    c2w = np.eye(4, dtype=np.float64)
+    c2w[:3, :3] = np.stack([x_axis, y_axis, z_axis], axis=1)
+    c2w[:3, 3] = position
+    return c2w
+
+
 seed = 42
 set_all_seeds(seed)
 
@@ -90,6 +115,24 @@ if __name__ == "__main__":
         optimal_params = pickle.load(f)
     cfg.set_optimal_params(optimal_params)
 
+    camera_setup = {
+        "position": [
+            -0.36948991180547435,
+            -0.33041834779509936,
+            -1.1568110038466772,
+        ],
+        "look_at": [
+            -0.6087389312024328,
+            -0.5896267181432237,
+            -2.2513752675877625,
+        ],
+        "up": [
+            -0.37738162507612366,
+            -0.4088114454525919,
+            0.8309370079144786,
+        ],
+    }
+
     # Set the intrinsic and extrinsic parameters for visualization
     with open(f"{base_path}/{case_name}/calibrate.pkl", "rb") as f:
         c2ws = pickle.load(f)
@@ -101,6 +144,10 @@ if __name__ == "__main__":
     cfg.intrinsics = np.array(data["intrinsics"])
     cfg.WH = data["WH"]
     cfg.bg_img_path = args.bg_img_path
+    intrinsic_camera_idx = 2
+    vis_intrinsic = cfg.intrinsics[intrinsic_camera_idx]
+    vis_c2w = camera_setup_to_c2w(camera_setup)
+    vis_w2c = np.linalg.inv(vis_c2w)
 
     exp_name = "init=hybrid_iso=True_ldepth=0.001_lnormal=0.0_laniso_0.0_lseg=1.0"
     gaussians_path = f"{args.gaussian_path}/{case_name}/{exp_name}/point_cloud/iteration_10000/point_cloud.ply"
@@ -122,4 +169,6 @@ if __name__ == "__main__":
         auto_traj=args.auto_traj,
         render_output_dir=render_output_dir,
         render_capture_fps=args.render_capture_fps,
+        vis_w2c=vis_w2c,
+        vis_intrinsic=vis_intrinsic,
     )
