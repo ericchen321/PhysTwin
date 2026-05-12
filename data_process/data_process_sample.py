@@ -31,6 +31,15 @@ num_surface_points = args.num_surface_points
 volume_sample_size = args.volume_sample_size
 
 
+def sample_volume_mesh_chunked(mesh, count, batch_size=256):
+    points = (np.random.random((count, 3)) * mesh.extents) + mesh.bounds[0]
+    contained = []
+    for start in range(0, count, batch_size):
+        end = min(start + batch_size, count)
+        contained.append(mesh.contains(points[start:end]))
+    return points[np.concatenate(contained)][:count]
+
+
 def getSphereMesh(center, radius=0.1, color=[0, 0, 0]):
     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius).translate(center)
     sphere.paint_uniform_color(color)
@@ -64,7 +73,7 @@ def process_unique_points(track_data):
             trimesh_mesh, num_surface_points
         )
         # Sample the interior points
-        interior_points = trimesh.sample.volume_mesh(trimesh_mesh, 10000)
+        interior_points = sample_volume_mesh_chunked(trimesh_mesh, 10000)
 
     if SHAPE_PRIOR:
         all_points = np.concatenate(
