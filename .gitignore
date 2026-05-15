@@ -220,5 +220,6 @@ cython_debug/
 .codex/
 .claude/
 .agents/
+.github/
 AGENTS.md
 CLAUDE.md
