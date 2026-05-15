@@ -234,8 +234,10 @@ def render_image(mesh, camera_poses, width=640, height=480, fov=1, device="cpu")
     extended_mesh = mesh.extend(num_poses).to(device)
     fragments = renderer.rasterizer(extended_mesh)
     depth = fragments.zbuf.squeeze().cpu().numpy()
-    rendered_images = renderer(mesh.extend(num_poses))
+    rendered_images = renderer.shader(fragments, extended_mesh)
     color = (rendered_images[..., :3].cpu().numpy() * 255).astype(np.uint8)
+    del extended_mesh, fragments, rendered_images, renderer, mesh
+    torch.cuda.empty_cache()
 
     return color, depth
 
@@ -261,11 +263,12 @@ def render_multi_images(
 
     num_cameras = camera_poses.shape[0]
 
-    # Render two times to avoid memory overflow
+    # Render two times to avoid memory overflow; empty cache between batches
     split = num_cameras // 2
     color1, depth1 = render_image(
         mesh, camera_poses[:split], width, height, fov, device
     )
+    torch.cuda.empty_cache()
     color2, depth2 = render_image(
         mesh, camera_poses[split:], width, height, fov, device
     )
